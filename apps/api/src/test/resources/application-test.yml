@@ -1,0 +1,6 @@
+assistant:
+  business-timezone: Asia/Shanghai
+  day-close-time: "05:00:00"
+  organization-id: 00000000-0000-0000-0000-000000000001
+  organization-code: TEST
+  organization-name: Test Organization

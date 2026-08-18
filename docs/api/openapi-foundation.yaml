@@ -1,0 +1,454 @@
+openapi: 3.1.0
+info:
+  title: Assistant Workbench API
+  version: 0.1.0
+  description: Foundation and Core Domain contract. Operations are added only with matching domain and test work.
+servers:
+  - url: /api/v1
+paths:
+  /auth/login:
+    post:
+      operationId: login
+      summary: Create a local access and refresh session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Authenticated session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/refresh:
+    post:
+      operationId: refreshSession
+      summary: Rotate a refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshRequest" }
+      responses:
+        "200":
+          description: Rotated session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Revoke the current session
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshRequest" }
+      responses:
+        "204": { description: Session revoked }
+  /context:
+    get:
+      operationId: getContext
+      summary: Get the authenticated user and organization context
+      responses:
+        "200":
+          description: Current context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /students:
+    get:
+      operationId: listStudents
+      summary: List visible, non-archived students in the current organization
+      parameters:
+        - { name: query, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+        - {
+            name: page,
+            in: query,
+            schema: { type: integer, minimum: 0, default: 0 },
+          }
+        - {
+            name: size,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+      responses:
+        "200":
+          description: Student page
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StudentPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      operationId: createStudent
+      summary: Create a student and the default seven-day weekly pattern
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateStudent" }
+      responses:
+        "201":
+          description: Student created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StudentView" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /students/{id}:
+    get:
+      operationId: getStudent
+      parameters:
+        - {
+            name: id,
+            in: path,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+      responses:
+        "200":
+          description: Student
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StudentView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      operationId: updateStudent
+      parameters:
+        - {
+            name: id,
+            in: path,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateStudent" }
+      responses:
+        "200":
+          description: Updated student
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StudentView" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /templates:
+    get:
+      operationId: listTemplates
+      parameters:
+        - { name: query, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+        - {
+            name: page,
+            in: query,
+            schema: { type: integer, minimum: 0, default: 0 },
+          }
+        - {
+            name: size,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 50 },
+          }
+      responses:
+        "200":
+          description: Template page
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TemplatePage" }
+    post:
+      operationId: createTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTemplate" }
+      responses:
+        "200":
+          description: Template and version 1 draft created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TemplateView" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /template-versions/{versionId}/items:
+    put:
+      operationId: replaceDraftItems
+      parameters:
+        - {
+            name: versionId,
+            in: path,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReplaceTemplateItems" }
+      responses:
+        "204": { description: Draft item collection replaced }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /template-versions/{versionId}/publish:
+    post:
+      operationId: publishTemplate
+      parameters:
+        - {
+            name: versionId,
+            in: path,
+            required: true,
+            schema: { type: string, format: uuid },
+          }
+      responses:
+        "200":
+          description: Published template
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TemplateView" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+  responses:
+    Unauthorized:
+      description: Authentication is required
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+    NotFound:
+      description: Resource not found in the current organization
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetail" }
+    Conflict:
+      description: Uniqueness or optimistic-lock conflict
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetail" }
+    Unprocessable:
+      description: Domain validation failed
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetail" }
+  schemas:
+    ContextView:
+      type: object
+      required:
+        [
+          user,
+          organization,
+          businessDate,
+          timezone,
+          dayCloseTime,
+          permissions,
+          featureFlags,
+          clientMinCompatibleVersion,
+        ]
+      properties:
+        user:
+          type: object
+          required: [id, displayName, roles]
+          properties:
+            id: { type: string, format: uuid }
+            displayName: { type: string }
+            roles: { type: array, items: { type: string } }
+        organization:
+          type: object
+          required: [id, code, name]
+          properties:
+            id: { type: string, format: uuid }
+            code: { type: string }
+            name: { type: string }
+        businessDate: { type: string, format: date }
+        timezone: { type: string, example: Asia/Shanghai }
+        dayCloseTime: { type: string, example: "05:00:00" }
+        permissions: { type: array, items: { type: string } }
+        featureFlags: { type: object, additionalProperties: { type: boolean } }
+        clientMinCompatibleVersion: { type: string, example: "0.1.0" }
+    AuthView:
+      type: object
+      required: [accessToken, refreshToken, expiresIn, user]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, format: int64 }
+        user:
+          type: object
+          required: [username, displayName, roles]
+          properties:
+            username: { type: string }
+            displayName: { type: string }
+            roles: { type: array, items: { type: string } }
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string }
+    StudentView:
+      type: object
+      required:
+        [id, studentCode, name, status, defaultDevicePolicy, version, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        studentCode: { type: string, maxLength: 50 }
+        name: { type: string, maxLength: 100 }
+        alias: { type: [string, "null"] }
+        status: { type: string, enum: [ACTIVE, PAUSED, ARCHIVED] }
+        classType: { type: [string, "null"] }
+        enrollmentDate: { type: [string, "null"], format: date }
+        defaultDevicePolicy:
+          { type: string, enum: [ALLOWED, NOT_ALLOWED, CONFIRM] }
+        primaryAssistantId: { type: [string, "null"], format: uuid }
+        note: { type: [string, "null"] }
+        version: { type: integer, format: int64 }
+        updatedAt: { type: string, format: date-time }
+    StudentPage:
+      type: object
+      required: [items, page, size, total, hasNext]
+      properties:
+        items:
+          { type: array, items: { $ref: "#/components/schemas/StudentView" } }
+        page: { type: integer }
+        size: { type: integer }
+        total: { type: integer, format: int64 }
+        hasNext: { type: boolean }
+    CreateStudent:
+      type: object
+      required: [studentCode, name]
+      properties:
+        studentCode: { type: string, maxLength: 50 }
+        name: { type: string, maxLength: 100 }
+        alias: { type: [string, "null"] }
+        defaultDevicePolicy:
+          {
+            type: string,
+            enum: [ALLOWED, NOT_ALLOWED, CONFIRM],
+            default: CONFIRM,
+          }
+        primaryAssistantId: { type: [string, "null"], format: uuid }
+        classType: { type: [string, "null"] }
+        enrollmentDate: { type: [string, "null"], format: date }
+        note: { type: [string, "null"] }
+    UpdateStudent:
+      allOf:
+        - { $ref: "#/components/schemas/CreateStudent" }
+        - type: object
+          required: [status, expectedVersion]
+          properties:
+            status: { type: string, enum: [ACTIVE, PAUSED, ARCHIVED] }
+            expectedVersion: { type: integer, format: int64, minimum: 0 }
+    TemplateView:
+      type: object
+      required:
+        [
+          id,
+          templateCode,
+          name,
+          subjectCode,
+          unitLabel,
+          defaultRequiresDevice,
+          status,
+          version,
+          updatedAt,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        templateCode: { type: string }
+        name: { type: string }
+        shortName: { type: [string, "null"] }
+        subjectCode: { type: string }
+        categoryCode: { type: [string, "null"] }
+        unitLabel: { type: string }
+        defaultDurationMinutes: { type: [integer, "null"] }
+        defaultRequiresDevice: { type: boolean }
+        status: { type: string, enum: [DRAFT, ACTIVE, RETIRED, ARCHIVED] }
+        currentPublishedVersionId: { type: [string, "null"], format: uuid }
+        currentPublishedVersionNumber: { type: [integer, "null"] }
+        currentItemCount: { type: [integer, "null"] }
+        version: { type: integer, format: int64 }
+        updatedAt: { type: string, format: date-time }
+    TemplatePage:
+      type: object
+      required: [items, page, size, total, hasNext]
+      properties:
+        items:
+          { type: array, items: { $ref: "#/components/schemas/TemplateView" } }
+        page: { type: integer }
+        size: { type: integer }
+        total: { type: integer, format: int64 }
+        hasNext: { type: boolean }
+    CreateTemplate:
+      type: object
+      required: [templateCode, name, subjectCode]
+      properties:
+        templateCode: { type: string }
+        name: { type: string }
+        shortName: { type: [string, "null"] }
+        subjectCode: { type: string }
+        categoryCode: { type: [string, "null"] }
+        unitLabel: { type: string, default: 单元 }
+        defaultDurationMinutes:
+          { type: [integer, "null"], minimum: 1, maximum: 1440 }
+        defaultRequiresDevice: { type: boolean, default: false }
+        description: { type: [string, "null"] }
+    ReplaceTemplateItems:
+      type: object
+      required: [items]
+      properties:
+        changeNote: { type: [string, "null"] }
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [ordinal, title, active]
+            properties:
+              ordinal: { type: integer, minimum: 1 }
+              itemCode: { type: [string, "null"] }
+              title: { type: string }
+              shortTitle: { type: [string, "null"] }
+              durationMinutes:
+                { type: [integer, "null"], minimum: 1, maximum: 1440 }
+              requiresDevice: { type: [boolean, "null"] }
+              contentRef: { type: [string, "null"] }
+              instructions: { type: [string, "null"] }
+              active: { type: boolean }
+    ProblemDetail:
+      type: object
+      required: [type, title, status, code, requestId, fieldErrors, current]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code: { type: string }
+        requestId: { type: string }
+        fieldErrors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string }
+              message: { type: string }
+        current: { type: object, additionalProperties: true }

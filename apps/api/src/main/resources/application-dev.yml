@@ -1,0 +1,23 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:assistant;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: false
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:h2-schema.sql
+
+assistant:
+  organization-id: 00000000-0000-4000-8000-000000000001
+  day-close-cron-enabled: false
+  seed-dev:
+    enabled: true
+    password: dev123

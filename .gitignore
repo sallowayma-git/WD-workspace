@@ -1,0 +1,32 @@
+# JavaScript
+node_modules/
+.pnpm-store/
+dist/
+coverage/
+
+# Java / Gradle
+.gradle/
+build/
+out/
+*.class
+
+# Rust / Tauri
+target/
+apps/desktop/src-tauri/gen/schemas/
+
+# Local configuration and generated secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local toolchains and runtime data
+.tooling/
+.data/
+*.log

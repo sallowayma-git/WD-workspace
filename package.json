@@ -1,0 +1,32 @@
+{
+  "name": "assistant-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev-stack.mjs",
+    "dev:web": "pnpm --dir apps/web dev",
+    "dev:api": "node scripts/gradle.mjs bootRun",
+    "dev:desktop": "pnpm --dir apps/desktop tauri dev",
+    "seed-dev": "node scripts/seed-dev.mjs",
+    "build": "pnpm run build:web && pnpm run build:api && pnpm run build:desktop:no-bundle",
+    "build:web": "pnpm --dir apps/web build",
+    "build:api": "node scripts/gradle.mjs build",
+    "build:desktop:no-bundle": "pnpm --dir apps/desktop tauri build --no-bundle",
+    "check": "pnpm run format:check && pnpm run check:web && pnpm run check:packages && pnpm run test:web && pnpm run test:api && pnpm run check:desktop",
+    "check:web": "pnpm --dir apps/web check",
+    "check:packages": "pnpm --dir apps/web exec tsc -p ../../packages/tsconfig.json --pretty false",
+    "test:web": "pnpm --dir apps/web test:run",
+    "test:api": "node scripts/gradle.mjs test",
+    "test:api:postgres": "node scripts/gradle.mjs postgresIntegrationTest",
+    "check:desktop": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "3.9.6"
+  }
+}

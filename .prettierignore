@@ -1,0 +1,7 @@
+DocsHarness/
+.tooling/
+node_modules/
+apps/api/build/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+pnpm-lock.yaml
