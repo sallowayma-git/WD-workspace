@@ -2,14 +2,17 @@ import { LoadingOutlined } from "@ant-design/icons";
 import { Alert, AutoComplete, Space } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { ApiError } from "../../lib/api/http";
+import { ApiError } from "../../lib/api/ApiError";
 import { MountTrackModal } from "../planning/MountTrackModal";
 import { listTemplates, type TaskTemplate } from "../templates/templateApi";
 import { createAdHocTask } from "./taskApi";
 
 export interface InlineTaskComposerProps {
   studentId: string;
+  /** Used only to give each student's composer a distinct accessible name. */
+  studentName?: string;
   scheduledDate: string;
+  onCreated?: () => void | Promise<void>;
 }
 
 type ComposerOption = {
@@ -21,7 +24,9 @@ type ComposerOption = {
 
 export function InlineTaskComposer({
   studentId,
+  studentName,
   scheduledDate,
+  onCreated,
 }: InlineTaskComposerProps) {
   const queryClient = useQueryClient();
   const [value, setValue] = useState("");
@@ -55,6 +60,7 @@ export function InlineTaskComposer({
       await queryClient.invalidateQueries({
         queryKey: ["today", scheduledDate],
       });
+      await onCreated?.();
     },
     onError: (error: unknown) => {
       const message =
@@ -100,6 +106,9 @@ export function InlineTaskComposer({
     <Space direction="vertical" style={{ width: "100%" }} size="small">
       <AutoComplete
         style={{ width: "100%" }}
+        aria-label={
+          studentName ? `为 ${studentName} 新增任务` : "新增临时任务或挂载模板"
+        }
         value={value}
         options={options}
         placeholder="输入临时任务回车创建，或搜索模板挂载"

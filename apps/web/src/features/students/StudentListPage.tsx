@@ -10,15 +10,15 @@ import {
   Select,
   Skeleton,
   Space,
-  Table,
   Tag,
   Typography,
 } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ApiError } from "../../lib/api/http";
+import { ApiError } from "../../lib/api/ApiError";
 import { createStudent, listStudents, type Student } from "./studentApi";
+import "./StudentListPage.css";
 
 type StudentForm = {
   studentCode: string;
@@ -70,7 +70,7 @@ export function StudentListPage() {
           description={
             error instanceof ApiError
               ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-              : "请确认 API 已启动并登录。"
+              : "请检查本地数据文件后重试。"
           }
           showIcon
           action={
@@ -110,43 +110,46 @@ export function StudentListPage() {
           <Button onClick={() => setSearch(searchInput)}>搜索</Button>
         </Space.Compact>
         {data.items.length === 0 ? (
-          <Empty description="当前组织没有匹配的学生" />
+          <Empty description="没有匹配的学生" />
         ) : (
-          <Table<Student>
-            rowKey="id"
-            dataSource={data.items}
-            pagination={false}
-            columns={[
-              {
-                title: "学生",
-                key: "identity",
-                render: (_value, student) => (
-                  <Space orientation="vertical" size={0}>
-                    <Link to={`/students/${student.id}/profile`}>
+          <div className="student-card-grid">
+            {data.items.map((student) => (
+              <Card key={student.id} size="small" hoverable>
+                <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                  <Space
+                    align="center"
+                    style={{ width: "100%", justifyContent: "space-between" }}
+                  >
+                    <Link
+                      to={`/students/${student.id}/profile`}
+                      className="student-card-name"
+                    >
                       {student.name}
                     </Link>
+                    <Tag
+                      color={student.status === "ACTIVE" ? "green" : "default"}
+                    >
+                      {statusLabels[student.status]}
+                    </Tag>
+                  </Space>
+                  <Space size={8} wrap>
                     <Typography.Text type="secondary">
                       {student.studentCode}
                     </Typography.Text>
+                    {student.classType ? (
+                      <Typography.Text type="secondary">
+                        {student.classType}
+                      </Typography.Text>
+                    ) : null}
+                    {student.tags.length > 0 ? (
+                      <Space size={4} wrap>
+                        {student.tags.slice(0, 3).map((tag) => (
+                          <Tag key={tag.code}>{tag.name}</Tag>
+                        ))}
+                      </Space>
+                    ) : null}
                   </Space>
-                ),
-              },
-              { title: "班型", dataIndex: "classType", key: "classType" },
-              {
-                title: "状态",
-                dataIndex: "status",
-                key: "status",
-                render: (status: Student["status"]) => (
-                  <Tag color={status === "ACTIVE" ? "green" : "default"}>
-                    {statusLabels[status]}
-                  </Tag>
-                ),
-              },
-              {
-                title: "入口",
-                key: "actions",
-                render: (_value, student) => (
-                  <Space size="small">
+                  <Space size="small" className="student-card-links">
                     <Link
                       to={`/students/${student.id}/profile`}
                       aria-label={`打开 ${student.name} 资料`}
@@ -166,10 +169,10 @@ export function StudentListPage() {
                       排期
                     </Link>
                   </Space>
-                ),
-              },
-            ]}
-          />
+                </Space>
+              </Card>
+            ))}
+          </div>
         )}
       </Space>
       <Modal
@@ -194,12 +197,8 @@ export function StudentListPage() {
           />
         ) : null}
         <Form<StudentForm> form={form} layout="vertical">
-          <Form.Item
-            name="studentCode"
-            label="学生编号"
-            rules={[{ required: true, message: "请输入学生编号" }]}
-          >
-            <Input maxLength={50} />
+          <Form.Item name="studentCode" label="学生编号" extra="留空将自动生成">
+            <Input maxLength={50} placeholder="可不填" />
           </Form.Item>
           <Form.Item
             name="name"

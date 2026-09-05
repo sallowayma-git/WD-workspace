@@ -1,0 +1,16 @@
+/* 学生列表卡片网格：默认两栏铺满内容区，窄屏降为单栏，宽屏最多三栏。
+   旧版整宽表格每行只放一个学生，信息密度过低（用户反馈 2026-08-30）。 */
+.student-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 12px;
+}
+
+.student-card-name {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.student-card-links a {
+  margin-right: 4px;
+}

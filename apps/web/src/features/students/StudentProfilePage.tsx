@@ -1,12 +1,18 @@
-import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import {
+  ArrowLeftOutlined,
+  DeleteOutlined,
+  PlusOutlined,
+} from "@ant-design/icons";
 import {
   Alert,
+  App,
   Button,
   Card,
   Empty,
   Form,
   Input,
   InputNumber,
+  Popconfirm,
   Select,
   Skeleton,
   Space,
@@ -17,11 +23,22 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ApiError } from "../../lib/api/http";
+import { ApiError } from "../../lib/api/ApiError";
+import { useBusinessDate } from "../foundation/useBusinessDate";
+import { WeeklyPatternEditor } from "./WeeklyPatternEditor";
+import { mondayOf, WeekPlanEditor } from "./WeekPlanEditor";
+import {
+  getWeekPlan,
+  getWeeklyPattern,
+  type WeekPlan,
+  type WeeklyPattern,
+} from "./availabilityApi";
 import { MountTrackModal } from "../planning/MountTrackModal";
+import { MountLongTaskModal } from "../longtasks/MountLongTaskModal";
 import { listStudentTracks } from "../planning/trackApi";
 import { TrackProgressPanel } from "../planning/TrackProgressPanel";
 import {
+  deleteStudent,
   getStudent,
   updateStudent,
   type Student,
@@ -128,6 +145,7 @@ export function StudentProfilePage() {
   const { studentId } = useParams<{ studentId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { message } = App.useApp();
   const [form] = Form.useForm<StudentFormValues>();
   // D8 / AC-013: on a 409 version conflict we must preserve the user's
   // unsubmitted edits and let them choose to "overwrite with my version"
@@ -139,6 +157,8 @@ export function StudentProfilePage() {
     pendingValues: StudentFormValues | null;
   } | null>(null);
   const [mountOpen, setMountOpen] = useState(false);
+  const [longTaskMountOpen, setLongTaskMountOpen] = useState(false);
+  const businessDate = useBusinessDate();
 
   const studentQuery = useQuery({
     queryKey: ["student", studentId],
@@ -233,6 +253,22 @@ export function StudentProfilePage() {
     setConflict(null);
   };
 
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteStudent(studentId as string),
+    onSuccess: async () => {
+      void message.success("学生已删除");
+      await queryClient.invalidateQueries({ queryKey: ["students"] });
+      void navigate("/students");
+    },
+    onError: (error) => {
+      void message.error(
+        error instanceof ApiError
+          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
+          : "删除学生失败，请稍后重试",
+      );
+    },
+  });
+
   if (studentQuery.isPending) {
     return (
       <Card>
@@ -252,7 +288,7 @@ export function StudentProfilePage() {
           description={
             error instanceof ApiError
               ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-              : "请确认 API 已启动并登录。"
+              : "请检查本地数据文件后重试。"
           }
           action={
             <Button type="link" onClick={() => void studentQuery.refetch()}>
@@ -286,18 +322,35 @@ export function StudentProfilePage() {
             }
           </Tag>
           <Tag>{devicePolicyLabel[student.defaultDevicePolicy]}</Tag>
+          <Popconfirm
+            title="删除该学生？"
+            description="将同时删除其常规周、排期、任务、轨道与生词记录，且不可恢复。"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={() => deleteMutation.mutate()}
+          >
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              loading={deleteMutation.isPending}
+              style={{ marginLeft: "auto" }}
+            >
+              删除学生
+            </Button>
+          </Popconfirm>
         </Space>
 
         {conflict ? (
           <Alert
             type="warning"
             showIcon
-            message="资料已被其他用户修改"
+            message="资料状态已变化"
             description={
               <>
                 <Typography.Paragraph style={{ marginBottom: 8 }}>
                   {conflict.currentVersion !== null
-                    ? `${conflict.message}（服务器当前版本 v${conflict.currentVersion}）。已为您重新加载最新资料，您的修改仍保留在表单中。`
+                    ? `${conflict.message}（本地数据当前版本 v${conflict.currentVersion}）。已为您重新加载最新资料，您的修改仍保留在表单中。`
                     : conflict.message}
                 </Typography.Paragraph>
                 <Space>
@@ -324,12 +377,12 @@ export function StudentProfilePage() {
           />
         ) : null}
 
-        <Card title="基本信息">
-          <Form<StudentFormValues>
-            form={form}
-            layout="vertical"
-            onFinish={(values) => updateMutation.mutate(values)}
-          >
+        <Form<StudentFormValues>
+          form={form}
+          layout="vertical"
+          onFinish={(values) => updateMutation.mutate(values)}
+        >
+          <Card title="基本信息">
             <Form.Item
               name="name"
               label="姓名"
@@ -361,7 +414,7 @@ export function StudentProfilePage() {
             <Form.Item name="tags" hidden>
               <Input />
             </Form.Item>
-            <Form.Item label="标签">
+            <Form.Item label="标签" style={{ marginBottom: 0 }}>
               <TagsEditor
                 value={formatTags(
                   (form.getFieldValue("tags") as TagDraft[] | undefined) ?? [],
@@ -372,58 +425,70 @@ export function StudentProfilePage() {
                 }}
               />
             </Form.Item>
-            <Form.Item>
-              <Space>
-                <Button
-                  type="primary"
-                  htmlType="submit"
-                  loading={updateMutation.isPending}
-                >
-                  保存
-                </Button>
-                <Button
-                  onClick={() => {
-                    if (studentQuery.data) {
-                      form.setFieldsValue(toFormValues(studentQuery.data));
-                    }
-                  }}
-                >
-                  重置
-                </Button>
-              </Space>
-            </Form.Item>
-          </Form>
-        </Card>
+          </Card>
 
-        <Card title="学科倾向" style={{ marginTop: 16 }}>
-          <SubjectPreferencesEditor submitPending={updateMutation.isPending} />
+          {/* FR-PROFILE-006：学科倾向的 Form.List 必须位于同一个 <Form> 内，
+              否则表单收集不到它的值，编辑后保存会静默丢失。 */}
+          <Card title="学科倾向" style={{ marginTop: 16 }}>
+            <SubjectPreferencesEditor
+              submitPending={updateMutation.isPending}
+            />
+            <Space style={{ marginTop: 16 }}>
+              <Button
+                type="primary"
+                htmlType="submit"
+                loading={updateMutation.isPending}
+              >
+                保存
+              </Button>
+              <Button
+                onClick={() => {
+                  if (studentQuery.data) {
+                    form.setFieldsValue(toFormValues(studentQuery.data));
+                  }
+                }}
+              >
+                重置
+              </Button>
+            </Space>
+          </Card>
+        </Form>
+
+        <Card title="学习条件摘要">
+          <StudyConditionSummary
+            studentId={student.id}
+            devicePolicy={student.defaultDevicePolicy}
+          />
         </Card>
 
         <Card title="常规周学习模式">
-          <Alert
-            type="info"
-            showIcon
-            title="即将上线"
-            description="常规周学习模式（周一至周日默认可学习状态与分钟数）将在此处配置。"
-          />
+          <WeeklyPatternEditor studentId={student.id} />
         </Card>
 
         <Card title="本周计划">
-          <Alert
-            type="info"
-            showIcon
-            title="即将上线"
-            description="本周计划覆盖（从常规周或上周复制并进行日期级覆盖）将在此处配置。"
-          />
+          <WeekPlanEditor studentId={student.id} />
         </Card>
 
         <Card
-          title="任务轨道"
-          extra={<Button onClick={() => setMountOpen(true)}>挂载轨道</Button>}
+          title="长期任务"
+          extra={
+            <Space>
+              <Button type="primary" onClick={() => setLongTaskMountOpen(true)}>
+                挂载长期任务
+              </Button>
+              <Button onClick={() => setMountOpen(true)}>挂载课程模板</Button>
+            </Space>
+          }
         >
           <TrackSection studentId={student.id} />
         </Card>
       </Space>
+      <MountLongTaskModal
+        studentId={student.id}
+        anchorDate={businessDate}
+        open={longTaskMountOpen}
+        onClose={() => setLongTaskMountOpen(false)}
+      />
       <MountTrackModal
         studentId={student.id}
         open={mountOpen}
@@ -451,12 +516,126 @@ function TrackSection({ studentId }: { studentId: string }) {
   if (tracksQuery.data.length === 0) {
     return (
       <Typography.Text type="secondary">
-        暂无活跃轨道，点击“挂载轨道”为学生挂载一个长期任务模板。
+        暂无活跃任务。点击“挂载长期任务”为学生持续布置系列任务，或在任务上右键
+        「设为长期任务」。
       </Typography.Text>
     );
   }
 
   return <TrackProgressPanel tracks={tracksQuery.data} />;
+}
+
+const DAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+function dayOfWeekOf(businessDate: string): number {
+  return ((new Date(`${businessDate}T00:00:00`).getDay() + 6) % 7) + 1;
+}
+
+// A week-plan day counts as an exception when it deviates from the base
+// pattern on any field the BASE_PATTERN generation copies verbatim, so a
+// freshly generated plan yields zero exceptions.
+function exceptionDayNames(pattern: WeeklyPattern, plan: WeekPlan): string[] {
+  const baseByDay = new Map(pattern.days.map((day) => [day.dayOfWeek, day]));
+  return plan.days
+    .map((day) => ({
+      name: DAY_NAMES[dayOfWeekOf(day.businessDate) - 1],
+      base: baseByDay.get(dayOfWeekOf(day.businessDate)),
+      day,
+    }))
+    .filter(
+      ({ day, base }) =>
+        base !== undefined &&
+        (day.available !== base.available ||
+          day.availableMinutes !== base.availableMinutes ||
+          day.devicePolicyOverride !== base.devicePolicyOverride),
+    )
+    .map(({ name }) => name);
+}
+
+// AVL-012: compact read-only digest of the learning conditions configured in
+// the cards below. Both queries reuse the exact keys mounted by
+// WeeklyPatternEditor / WeekPlanEditor so react-query deduplicates observers
+// and the summary never issues a request of its own.
+function StudyConditionSummary({
+  studentId,
+  devicePolicy,
+}: {
+  studentId: string;
+  devicePolicy: DevicePolicy;
+}) {
+  const businessDate = useBusinessDate();
+  const patternQuery = useQuery({
+    queryKey: ["weekly-pattern", studentId],
+    queryFn: () => getWeeklyPattern(studentId),
+    retry: false,
+  });
+  const weekStart = mondayOf(businessDate);
+  const weekPlanQuery = useQuery({
+    queryKey: ["week-plan", studentId, weekStart],
+    queryFn: () => getWeekPlan(studentId, weekStart),
+    retry: false,
+  });
+
+  if (patternQuery.isPending) {
+    return <Skeleton active paragraph={{ rows: 2 }} />;
+  }
+
+  const pattern = patternQuery.data;
+  const openDays = pattern ? pattern.days.filter((day) => day.available) : [];
+  const totalMinutes = openDays.reduce(
+    (sum, day) => sum + day.availableMinutes,
+    0,
+  );
+  const dayDigest = openDays
+    .map((day) => `${DAY_NAMES[day.dayOfWeek - 1]} ${day.availableMinutes}′`)
+    .join(" · ");
+
+  let exceptionText: string;
+  if (weekPlanQuery.isPending) {
+    exceptionText = "加载中…";
+  } else if (weekPlanQuery.isError) {
+    // 404 means the week has no date overrides yet; anything else is a real
+    // read failure and must not be reported as "无".
+    exceptionText =
+      weekPlanQuery.error instanceof ApiError &&
+      weekPlanQuery.error.status === 404
+        ? "无"
+        : "暂不可用";
+  } else if (!pattern) {
+    exceptionText = "—";
+  } else {
+    const names = exceptionDayNames(pattern, weekPlanQuery.data);
+    exceptionText =
+      names.length > 0 ? `${names.length} 处（${names.join("、")}）` : "无";
+  }
+
+  return (
+    <Space direction="vertical" size="small" style={{ width: "100%" }}>
+      {pattern ? (
+        <Space wrap align="baseline" size="small">
+          <Typography.Text type="secondary">默认周</Typography.Text>
+          <Typography.Text>
+            每周 {openDays.length} 天 · 共 {totalMinutes} 分钟
+          </Typography.Text>
+          {dayDigest ? (
+            <Typography.Text type="secondary">{dayDigest}</Typography.Text>
+          ) : null}
+        </Space>
+      ) : (
+        <Typography.Text type="secondary">
+          尚未设置常规周，请先在下方“常规周学习模式”卡片中配置学习日与时长。
+        </Typography.Text>
+      )}
+      <Space wrap align="baseline" size="small">
+        <Typography.Text type="secondary">设备策略</Typography.Text>
+        <Tag>{devicePolicyLabel[devicePolicy]}</Tag>
+      </Space>
+      <Space wrap align="baseline" size="small">
+        <Typography.Text type="secondary">本周例外</Typography.Text>
+        <Typography.Text>{exceptionText}</Typography.Text>
+      </Space>
+    </Space>
+  );
 }
 
 function TagsEditor({

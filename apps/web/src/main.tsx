@@ -5,10 +5,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App as AntdApp, ConfigProvider } from "antd";
 import "antd/dist/reset.css";
 import "./styles.css";
+import "./vendor/flowclass/flowclass-compat.css";
 import { App } from "./app/App";
 import { RootErrorBoundary } from "./app/RootErrorBoundary";
-import { AuthGate, AuthProvider } from "./features/auth/AuthProvider";
-import { ContextGate } from "./features/foundation/ContextGate";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -36,21 +35,15 @@ createRoot(rootElement).render(
         },
       }}
     >
-      <AuthProvider>
-        <AuthGate>
-          <AntdApp>
-            <QueryClientProvider client={queryClient}>
-              <ContextGate>
-                <RootErrorBoundary>
-                  <BrowserRouter>
-                    <App />
-                  </BrowserRouter>
-                </RootErrorBoundary>
-              </ContextGate>
-            </QueryClientProvider>
-          </AntdApp>
-        </AuthGate>
-      </AuthProvider>
+      <AntdApp>
+        <QueryClientProvider client={queryClient}>
+          <RootErrorBoundary>
+            <BrowserRouter>
+              <App />
+            </BrowserRouter>
+          </RootErrorBoundary>
+        </QueryClientProvider>
+      </AntdApp>
     </ConfigProvider>
   </StrictMode>,
 );

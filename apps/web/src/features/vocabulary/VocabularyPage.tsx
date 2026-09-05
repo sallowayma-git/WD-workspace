@@ -26,7 +26,8 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ApiError } from "../../lib/api/http";
+import { ApiError } from "../../lib/api/ApiError";
+import { getPlatformAdapter } from "../../lib/platform/runtimePlatformAdapter";
 import { useBusinessDate } from "../foundation/useBusinessDate";
 import {
   listVocabulary,
@@ -67,7 +68,7 @@ export function VocabularyPage() {
   const { studentId } = useParams<{ studentId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  // AC-001: 业务日期由服务端按组织时区计算,优先使用后端 businessDate。
+  // Vocabulary defaults to the local machine's work date.
   const today = useBusinessDate();
   const thisWeekStart = getWeekStart(today);
   const [weekStart, setWeekStart] = useState(thisWeekStart);
@@ -179,13 +180,13 @@ export function VocabularyPage() {
       void message.warning("本周暂无可复制的规范词条");
       return;
     }
-    navigator.clipboard
-      .writeText(text)
+    getPlatformAdapter()
+      .copyText(text)
       .then(() => {
         void message.success(`已复制 ${data.entries.length} 个规范词条`);
       })
       .catch(() => {
-        void message.error("复制失败，浏览器可能不支持剪贴板");
+        void message.error("复制失败，当前运行环境可能不支持剪贴板");
       });
   };
 
@@ -201,14 +202,10 @@ export function VocabularyPage() {
     const blob = new Blob([CSV_BOM + csv], {
       type: "text/csv;charset=utf-8",
     });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `vocabulary_${studentId}_${weekStart}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    void getPlatformAdapter().saveFile(
+      blob,
+      `vocabulary_${studentId}_${weekStart}.csv`,
+    );
   };
 
   if (vocabQuery.isPending) {
@@ -230,7 +227,7 @@ export function VocabularyPage() {
           description={
             error instanceof ApiError
               ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-              : "请确认 API 已启动并登录。"
+              : "请检查本地数据文件后重试。"
           }
           action={
             <Button type="link" onClick={() => void vocabQuery.refetch()}>
@@ -340,7 +337,11 @@ export function VocabularyPage() {
                 key: "note",
                 ellipsis: true,
                 render: (note: string | null) =>
-                  note && note.length > 0 ? note : <Typography.Text type="secondary">—</Typography.Text>,
+                  note && note.length > 0 ? (
+                    note
+                  ) : (
+                    <Typography.Text type="secondary">—</Typography.Text>
+                  ),
               },
               {
                 title: "录入时间",
@@ -480,7 +481,9 @@ export function VocabularyPage() {
               <div>
                 <Typography.Text type="secondary">词条</Typography.Text>
                 <div>
-                  <Typography.Text strong>{editing.termOriginal}</Typography.Text>
+                  <Typography.Text strong>
+                    {editing.termOriginal}
+                  </Typography.Text>
                 </div>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   规范：{editing.termNormalized}
@@ -549,8 +552,7 @@ function escapeCsvRow(fields: string[]): string {
 /**
  * CSV formula-injection guard (SDD §18.4). If a value starts with one of the
  * trigger characters = + - @ <TAB> <CR>, prefix a single quote so spreadsheet
- * applications interpret the cell as text. Mirrors the backend
- * ExportService.sanitizeFormula in apps/api.
+ * applications interpret the cell as text.
  */
 function sanitizeFormula(value: string): string {
   if (value.length === 0) return "";

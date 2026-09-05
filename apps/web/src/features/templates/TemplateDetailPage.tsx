@@ -17,7 +17,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ApiError } from "../../lib/api/http";
+import { ApiError } from "../../lib/api/ApiError";
 import {
   createTemplateDraft,
   getTemplateDetail,
@@ -133,7 +133,7 @@ export function TemplateDetailPage() {
           description={
             error instanceof ApiError
               ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-              : "请确认 API 已启动并登录。"
+              : "请检查本地数据文件后重试。"
           }
           action={
             <Button type="link" onClick={() => void detailQuery.refetch()}>

@@ -1,5 +1,7 @@
 # Findings & Decisions
 
+> **废止声明（2026-08-28）**：2026-08-20 起，在线架构（中心 PostgreSQL、RBAC、租户隔离、登录会话、Spring 后端）已按 `DocsHarness/04_Flowclass到WD_助教工作台二开融合任务书_v1.0.md` §1.2/§14 有意整体删除，产品冻结为本地单用户 Tauri 桌面 + SQLite。本文件中所有 PostgreSQL / RBAC / 租户 / Phase 0~~3 门禁表述（含全文的 RBAC 缺口、租户隔离、AuthSessionStore、Testcontainers、"Backend: 20 unit tests pass" 等结论）自 2026-08-20 起一并废止；历史内容原样保留，仅供追溯，不得作为后续会话或代理的执行依据（勿据旧文反向重建在线栈）。现行基线为 DocsHarness/04 的 F0~~F9 阶段门禁 + §19 ACC-001~074 验收矩阵 + 本地 SQLite，见 `docs/adr/ADR-002-local-desktop-runtime.md`、`README.md`、`docs/migration/flowclass/acceptance.md`；审计背景见 `docs/migration/flowclass/audit-2026-08-27.md`。
+
 ## Requirements
 
 - 用户要求：查看 `DocsHarness/` 三份基础文档，初始化项目并开始开发；目标由代理自行设定、分阶段更新，直到达到文档约定和需求。
@@ -97,3 +99,19 @@
 - 所有检查通过：format、lint、typecheck、web tests (4/4)、API tests (17/17)、cargo fmt/clippy。
 - 审计代理正在后台运行，审计后端业务规则和前端 PRD 覆盖度。
 - 文档歧义集中在日结时间、多助教访问关系、认证方式、并发契约、locked 手动改期权限、CONFIRM 设备、容量策略、同日并行、Correction API、Linux 发布范围与 Excel 验收强度。实现时采用更强门禁且把未冻结项显式保留。
+
+## 2026-08-29 Session Recovery: Matrix Scroll Audit
+
+- 会话恢复后确认上次收尾点是工作台矩阵 D-1/D-2：D-1 已在 `StudentWorkbenchPage.tsx` 使用 `PointerSensor` 的 6px `distance` activation constraint；D-2 仍待修复。
+- Ant Design 6 / rc-table 1.11 的 `components.body` 函数接收第二个参数 `{ ref, onScroll }`。当前 `StudentTaskMatrixShell` 只接收 `rows`，因此 rc-table 的 `scrollBodyRef` 为 null，body 横向滚动不会调用 `onInternalScroll`，表头与 body 脱钩。
+- 最小修复是保留虚拟 body 的本地 ref，同时把 rc-table 提供的 ref 合并到同一滚动 div，并将原生 scroll 事件转发为 rc-table 的 `{ currentTarget, scrollLeft }` 形状；补充 body->header scroll synchronization 回归测试。
+- D-1 页面级回归测试已补入 `StudentWorkbenchPage.test.tsx`：通过 `userEvent.click` 点击 `任务 密卷08` checkbox，并断言 `completeTask` 收到 taskId/version；该测试与 D-1 sensor 配置共同证明普通点击路径可用。
+- D-2 修复后的定向矩阵测试 2/2 通过；最终仓库门禁 `pnpm check` 全绿（local-runtime 61 个可达模块、Web 16 文件/84 用例、packages typecheck、Rust fmt/clippy/test），`pnpm format:check`、`pnpm build:web` 和 `git diff --check` 也通过。
+
+## 2026-09-05 SEQUENCE 长期任务落地要点
+
+- SQLite 的 ALTER TABLE 无法去掉 NOT NULL 或改 CHECK，放宽 student_task_track/task_instance 约束必须重建表；重建顺序（先把 task_instance 行移入无约束备份表 → 重建 student_task_track → 再重建 task_instance）使迁移在 PRAGMA foreign_keys=ON（node:sqlite 与 sqlx 默认）下可直接重放，sql.js（FK off）同样通过。
+- (track_id, item_ordinal) 的 PENDING 部分唯一索引对 ITEMIZED 是旧 (track_id, template_item_id) 索引的等价替换，因为 task_template_item 上 (version_id, ordinal) 唯一；它同时承载 SEQUENCE 轨道的"一个序号最多一个待办实例"不变量。
+- 完成推进的事务边界保持既有 lock ordering（task → track 单事务内完成+指针+下一项），SEQUENCE 下一项渲染使用轨道上的 title_pattern_snapshot 而非当前定义，保证定义改名不影响已挂载学生。
+- 归一化键（NFKC+压空白+小写）只用于 find-or-create 定义；不做去标点/模糊匹配，否则"真题2024"与"真题2025"这类年份标题会误聚合。
+- antd Modal 在 jsdom 下动画导致 toBeVisible 不稳定，组件测试按 toBeInTheDocument 断言；eslint 类型检查规则禁掉 expect.any(String)/stringMatching 的 any 流入 objectContaining，改用 mock.calls 断言。

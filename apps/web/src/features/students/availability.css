@@ -1,0 +1,43 @@
+.availability-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.availability-row {
+  display: grid;
+  grid-template-columns:
+    minmax(92px, 0.75fr) 76px minmax(132px, 1fr) minmax(150px, 1fr)
+    minmax(160px, 1.4fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--ant-color-border-secondary, #f0f0f0);
+}
+
+.availability-row:last-child {
+  border-bottom: 0;
+}
+
+.availability-row-weekly {
+  grid-template-columns: minmax(92px, 0.75fr) 76px minmax(132px, 1fr) minmax(
+      150px,
+      1fr
+    );
+}
+
+.availability-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+@media (max-width: 760px) {
+  .availability-row,
+  .availability-row-weekly {
+    grid-template-columns: minmax(90px, 1fr) minmax(120px, 1fr);
+  }
+}

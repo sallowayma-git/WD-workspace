@@ -6,6 +6,9 @@ import {
   PlusOutlined,
   EyeOutlined,
   FlagFilled,
+  ForwardOutlined,
+  RocketOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
 import type { Priority } from "./taskApi";
@@ -16,7 +19,13 @@ export interface TaskContextMenuProps {
   priority?: Priority;
   onSetPriority?: (next: Priority) => void;
   onReschedule: () => void;
+  canCarryForward: boolean;
+  onCarryForward?: () => void;
   onDuplicate: () => void;
+  /** 系列推进：生成“序号+1、排到下一天”的新任务。未提供时不显示该项。 */
+  onCreateNext?: () => void;
+  /** 原地升级为长期任务（SEQUENCE 轨道）。仅待办的普通任务会拿到该回调。 */
+  onConvertToLongTask?: () => void;
   onAddSubTask: () => void;
   onLinkParent: () => void;
   onViewDetail: () => void;
@@ -39,7 +48,11 @@ export function buildTaskMenuItems(
     priority,
     onSetPriority,
     onReschedule,
+    canCarryForward,
+    onCarryForward,
     onDuplicate,
+    onCreateNext,
+    onConvertToLongTask,
     onAddSubTask,
     onLinkParent,
     onViewDetail,
@@ -95,12 +108,42 @@ export function buildTaskMenuItems(
       onClick: onReschedule,
     },
     {
+      key: "carryForward",
+      icon: <ForwardOutlined />,
+      label: "顺延到下一学习日",
+      disabled: !canCarryForward || !onCarryForward,
+      onClick: onCarryForward,
+    },
+    {
       key: "duplicate",
       icon: <CopyOutlined />,
       label: "复制",
       disabled: locked,
       onClick: onDuplicate,
     },
+    ...(onCreateNext
+      ? [
+          {
+            key: "createNext",
+            icon: <RocketOutlined />,
+            label: "生成下一项（序号+1，排到下一天）",
+            disabled: locked,
+            onClick: onCreateNext,
+          },
+        ]
+      : []),
+    ...(onConvertToLongTask
+      ? [
+          { type: "divider" as const },
+          {
+            key: "convertToLongTask",
+            icon: <ThunderboltOutlined />,
+            label: "设为长期任务…",
+            disabled: locked,
+            onClick: onConvertToLongTask,
+          },
+        ]
+      : []),
     {
       key: "addSubTask",
       icon: <PlusOutlined />,

@@ -1,5 +1,7 @@
 # Progress Log
 
+> **废止声明（2026-08-28）**：2026-08-20 起，在线架构（中心 PostgreSQL、RBAC、租户隔离、登录会话、Spring 后端）已按 `DocsHarness/04_Flowclass到WD_助教工作台二开融合任务书_v1.0.md` §1.2/§14 有意整体删除，产品冻结为本地单用户 Tauri 桌面 + SQLite。本文件中所有 PostgreSQL / RBAC / 租户 / Phase 0~~3 门禁表述（含"PRD AC-001~~015: 15/15 fully satisfied"、"ArchitectureTest: PASS"、"Backend: 20 unit tests pass" 等对已删除栈的记录）自 2026-08-20 起一并废止；历史内容原样保留，仅供追溯，不得作为后续会话或代理的执行依据（勿据旧文反向重建在线栈）。现行基线为 DocsHarness/04 的 F0~~F9 阶段门禁 + §19 ACC-001~~074 验收矩阵 + 本地 SQLite，见 `docs/adr/ADR-002-local-desktop-runtime.md`、`README.md`、`docs/migration/flowclass/acceptance.md`；审计背景见 `docs/migration/flowclass/audit-2026-08-27.md`。
+
 ## Session: 2026-08-16
 
 ### Phase 1: Requirements & Discovery
@@ -268,6 +270,7 @@ Backend audit round 2: agent (abe6b7abca149a18a) stalled/terminated without a fi
 Started with 10 parallel agents (6 read-only audits by module + 4 forward dev). Continued with multiple waves targeting CRITICAL/MAJOR gaps surfaced by audits.
 
 ### CRITICAL gaps fixed (6)
+
 - **Export pipeline** (commit 038dba3 + fca5737): ExportService/ExportController/VocabularyController export endpoint + export_job schema. CSV formula injection guard (=+-@\t\r prefix '), UTF-8 BOM, EXPORT_GENERATED audit event.
 - **search row-level security** (commit a7b4908): SearchService assistant-scoped by primary_assistant_id (surrogate for student_access), TEMPLATE_ITEM group added.
 - **audit module scaffold + wiring** (commit 9ef6209 + 773f2c6): AuditEvent persistence + query API + idempotency. ExecutionService.writeAuditEvent delegates to AuditService.recordEvent with real before/after snapshots (status/scheduledDate/locked/version/carried links).
@@ -276,6 +279,7 @@ Started with 10 parallel agents (6 read-only audits by module + 4 forward dev). 
 - **import cross-tenant** (commit a4ab38e): ImportJobRepository all queries/updates enforce organization_id.
 
 ### MAJOR gaps fixed
+
 - **student_subject_preference** (commit a311ceb): FR-PROFILE-006 table + CRUD + GET /students/{id}/subject-preferences.
 - **template publish safety** (commit 177866e): lockForPublish row lock + retire old PUBLISHED version + active item count validation + CodeNormalizer (commit 499f789).
 - **FOR UPDATE row locks** (commit 6b9be93): findByIdForUpdate on task_instance + track→task lock order (SDD §9.6/§19.2).
@@ -287,9 +291,11 @@ Started with 10 parallel agents (6 read-only audits by module + 4 forward dev). 
 - **MountTrack idempotency** (commit ceffd31): idempotencyKey + structured override detection.
 
 ### Architecture
+
 - **Modulith cycle fix** (commit 47c22da): broke importexport↔vocabulary cycle — ExportService owns ExportRow projection + JDBC query (no vocabulary dependency), VocabularyController no longer delegates to ExportController. ArchitectureTest passes.
 
 ### Verification (commit 47c22da health check)
+
 - Backend clean compileJava compileTestJava: BUILD SUCCESSFUL
 - ArchitectureTest: PASS (no cycle violations)
 - Backend unit tests: 20 tests / 0 failures (7 test classes)
@@ -297,6 +303,7 @@ Started with 10 parallel agents (6 read-only audits by module + 4 forward dev). 
 - Frontend vitest: 4 tests passed
 
 ### Remaining (P3, runtime/ops, not code-fixable)
+
 - publish idempotency_record (TODO in TemplateRepository) — local dev acceptable
 - Quartz JDBC JobStore cross-instance lock — dev single-instance acceptable
 - Import async (NFR-PERF-005) — TODO, synchronous acceptable
@@ -312,6 +319,7 @@ Continued /loop after all CRITICAL/MAJOR closed. Final audit confirmed 15/15 AC 
 - `d21f6d6` Batch task operation feature flag (P2-TDY-008) — useFeatureFlag hook + TodayPage bulk complete/reopen, default off.
 
 ### Final state (38 commits this loop session)
+
 - PRD AC-001~015: 15/15 fully satisfied
 - Four business proofs: all ✅
 - ArchitectureTest: PASS (no cycle violations)
@@ -336,10 +344,12 @@ After P3 polish, continued scanning SDD §11 API contract for unimplemented endp
 - `8062755` POST /tracks/{trackId}/schedule-items endpoint (SDD §11.5) — exposed SchedulingService.scheduleTrackItems as REST.
 
 ### State at 50 commits
+
 - PRD AC-001~015: 15/15 fully satisfied
 - ArchitectureTest: PASS
 - All SDD §11 major API endpoints implemented (context, students, weekly-pattern, week-plans, workbench, schedule, tracks, tasks, templates, vocabulary, search, imports, exports, audit, day-close, search-rebuild, schedule-items)
 - Remaining minor (not blocking): /tracks/{id} pause/resume/cancel lifecycle, GET /tasks/{taskId} detail+history, /tasks/{taskId}/unlock — these are secondary CRUD endpoints
+
 ## Session: 2026-08-18 — Cross-Phase Re-Audit Loop
 
 - Restored planning state with `planning-with-files`; detected stale/contradictory phase claims.
@@ -347,3 +357,40 @@ After P3 polish, continued scanning SDD §11 API contract for unimplemented endp
 - Main-agent spot checks confirmed the broken Excel job identifier and dev auth topology, plus missing desktop/API/security and acceptance-gate evidence.
 - Re-baselined `task_plan.md`: Foundation is no longer marked complete, and database identity/RBAC/tenant/security remain hard requirements.
 - Next slice: fix import/dev-start blockers and verified execution invariants, add focused tests, then rerun gates and repeat adversarial audit.
+
+## Session: 2026-08-27 — Flowclass 融合并发审计
+
+（本节之后旧段落的失实表述按废止声明处理，历史原样保留。）
+
+- 以 6 条审计线并发子代理（A 验收清单与阶段门禁 / B Calendar 移植与样式兼容层 / C 调度域算法与统一命令 / D 矩阵融合与工作台 / E 本地数据层与清理 / F 模型边界与 WD 模块保留）对分支 `codex/flowclass-fusion` 全部未提交融合改动做只读取证，报告落盘 `docs/migration/flowclass/audit-2026-08-27.md`。
+- 实时门禁复跑全绿：`pnpm check`（Web 14 测试文件 / 61 用例、local-runtime 门禁 59 个可达源码模块无 HTTP transport）、`pnpm format:check`、`cargo fmt --check` + `cargo clippy -D warnings`；CI 与 README 已对齐本地桌面形态。
+- 审计线 A 结论：acceptance.md 46 项覆盖完整且与代码高度相符，AUTO 声称诚实，无虚假验收；缺口在记账口径（AUTO 42/43 与 MANUAL 3/4 冲突）、F0~F5 逐项收口说明缺失、F0-004 WD 三页截图永久缺失、根目录 planning 三件套整体漂移（最高优先）。
+- 审计线 C 结论：调度域实现质量高、收敛度高（单一 domain service + 单一 DataAdapter + 四视图统一失效）；遗留 previewCarryForward（DLY-019）未实现、DLY 必测场景 T02/T08 无直接用例且 T05/T06 仅间接覆盖、同日排序缺 priority/star（INT-CAL-009）、DLY-018 幂等缺口与若干文档口径漂移。
+- 审计线 E 结论：本地 SQLite 数据层为六条线中质量最高——LOC/CLEAN 全部可验证落地，R10 事务有三层防中间态（expectedRowsAffected + 乐观锁 + uq_task_carry_target 唯一索引），删除契约与测试一一对应，无 CRITICAL/MAJOR。
+- 审计线 B/F 结论：Calendar/Matrix 为执行质量很高、决策记录诚实的 Partial adoption（ADAPT 文件来源哈希现场实测吻合，五条红线全仓零命中）；DROP 合规完全干净，无 SaaS 模型回潮；§10 最终模型与 §24 DoD 在代码层成立（parity 双侧证据与真机 MANUAL 项除外）。
+- 审计线 D（矩阵融合与工作台）在报告落盘时仍在运行，返回后增补进 `audit-2026-08-27.md`。
+- 修复轮次已启动：本轮按审计行动清单修复文档口径（planning 三件套废止声明、acceptance.md MANUAL 记账、execution-parity.md supersession 注记、baseline.md F0~F5 收口说明）；代码侧修复（DLY 用例、previewCarryForward、排序维度、门禁加固等）由并行代理进行。
+
+## Session: 2026-08-29 — Resume Matrix D-2
+
+- 已读取上次会话 JSONL；上次在工作台矩阵 D-1/D-2 收尾时因代理服务 503 中断，D-1 与其他收尾代码已落盘，D-2 仍需主线程完成。
+- 已复核 rc-table 源码：自定义 body 必须消费第二参数的 `ref`/`onScroll`，否则 fixed header 的横向同步链路不会建立。
+- 当前动作：修改 `StudentTaskMatrixShell` 的 body ref/scroll 接线，补充同步回归测试，然后运行矩阵测试、Web check、format 和 diff 检查。
+
+## Session: 2026-08-29 — Matrix Closure
+
+- D-2 fixed in `apps/web/src/vendor/flowclass/matrix/StudentTaskMatrixShell.tsx`: the custom rc-table body now merges rc-table's ref into the virtual scroll element and forwards native scroll events to rc-table's `onScroll` callback.
+- Added a regression test that scrolls the virtual body and asserts the fixed header receives the same `scrollLeft`.
+- Added a D-1 page regression test using `userEvent.click` on a TaskCard checkbox and asserting the local `completeTask` command payload.
+- Updated `docs/migration/flowclass/audit-2026-08-27.md` to record D-1/D-2 as fixed and to distinguish the historical 14/61 baseline from the current 16/84 result.
+- Final verification passed: root `pnpm check`, root `pnpm format:check`, root `pnpm build:web`, and `git diff --check`.
+
+## Session: 2026-09-05 — 长期任务 SEQUENCE 领域模型落地
+
+- 输入：用户提供的《长期任务简化与全库工程收敛开发设计文档 v1.0》（基线 dc5c9ca，面向已退役的 Spring/PostgreSQL 架构）。经全库比对，其 P0 正确性问题（Workbench 伪造字段/假 availability/幂等未接线/完成不物化下一项）已在新架构中修复；本轮落地其中仍然成立的核心：SEQUENCE 长期任务模型（文档 PR-1/PR-2 的本地版）。
+- Schema：`0002_sequence_long_task.sql`——task_template 加 generation_mode/title_pattern/default_start_ordinal/sequence_end_ordinal/normalized_key；student_task_track 与 task_instance 按外键安全顺序重建（放宽 template_version_id/end_ordinal 非空，TRACK 身份改为 track_id+item_ordinal，新增 uq_task_pending_track_ordinal）；migration 接入 lib.rs / browserSqliteStorage / 测试夹具三处。
+- Adapter：listLongTasks / createLongTask / mountLongTask / convertTaskToLongTask（原地升级，任务 id 与标题快照不变）+ completeTask 的 SEQUENCE 分支（按轨道快照模板渲染下一项，落点走 availability 90 天窗口）+ scheduleTrackItems 对 SEQUENCE 明确拒绝；trackView 增 generationMode/definitionName，progress 对开放型返回 null percent。
+- UI：主导航「任务模板」→「长期任务」（/long-tasks LongTaskListPage + CreateLongTaskModal 带预览）；课程模板保留 /templates 不进导航；Today/Schedule/Workbench 右键「设为长期任务…」（仅 AD_HOC+PENDING+未锁定）；StudentProfilePage 增「挂载长期任务」（MountLongTaskModal，只要任务+起始序号）；TrackProgressPanel 开放型显示“当前第 N 项 · 已完成 M 次”，不再暴露版本 UUID。
+- 测试：适配器 22→29 用例（序列定义/挂载幂等重放/周末顺延/顺延保序号/开放型永不完成/有限型完成即停/原地转换+定义复用/批量排期拒绝/唯一索引）；seriesTitle 补模板构建渲染与归一化键用例；新增 MountLongTaskModal 组件测试；TrackProgressPanel 补 SEQUENCE 渲染断言。
+- 门禁：`pnpm check` 全绿（local-runtime 70 模块、lint+typecheck、Web 21 文件 141 用例、cargo fmt/clippy/test）。
+- 决策记录：`docs/adr/ADR-003-sequence-long-task.md`；有意不做：系列自动识别（suggestion）、定义编辑命令、数字在标题中间的解析。

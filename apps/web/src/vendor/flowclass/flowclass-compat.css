@@ -1,0 +1,152 @@
+/* Scoped compatibility layer for adapted Flowclass UI. No reset/preflight. */
+.flowclass-scope {
+  --flowcal-border: #d7e0e8;
+  --flowcal-muted: #f4f6f8;
+  --flowcal-accent: #145a8d;
+  color: #1f2d3d;
+}
+
+.flowclass-scope .flowcal-month {
+  min-width: 720px;
+  overflow: hidden;
+  border: 1px solid var(--flowcal-border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.flowclass-scope .flowcal-weekdays,
+.flowclass-scope .flowcal-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(96px, 1fr));
+}
+
+.flowclass-scope .flowcal-weekday {
+  padding: 8px;
+  border-right: 1px solid var(--flowcal-border);
+  border-bottom: 1px solid var(--flowcal-border);
+  color: #526477;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.flowclass-scope .flowcal-day {
+  min-width: 0;
+  min-height: 116px;
+  padding: 6px;
+  border-right: 1px solid var(--flowcal-border);
+  border-bottom: 1px solid var(--flowcal-border);
+  background: #fff;
+  transition:
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.flowclass-scope .flowcal-day-muted {
+  background: var(--flowcal-muted);
+  color: #8291a1;
+}
+
+.flowclass-scope .flowcal-day-over {
+  background: #eaf4fb;
+  box-shadow: inset 0 0 0 2px var(--flowcal-accent);
+}
+
+.flowclass-scope .flowcal-day-number {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.flowclass-scope .flowcal-events {
+  display: grid;
+  gap: 4px;
+}
+
+.flowclass-scope .flowcal-event {
+  min-width: 0;
+  border-left: 3px solid #4e83a8;
+  border-radius: 3px;
+  background: #edf5fa;
+}
+
+.flowclass-scope .flowcal-event-completed {
+  border-left-color: #43845d;
+  background: #edf7f0;
+}
+
+.flowclass-scope .flowcal-event-carried_over,
+.flowclass-scope .flowcal-event-cancelled {
+  border-left-color: #8b98a5;
+  background: #f0f2f4;
+}
+
+.flowclass-scope .flowcal-event-blocked {
+  border-left-color: #b05353;
+  background: #fbefef;
+}
+
+.flowclass-scope .flowcal-event-button {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.flowclass-scope .flowcal-event-title {
+  overflow: hidden;
+  flex: 1;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flowclass-scope .flowcal-event-lock {
+  color: #68798a;
+  font-size: 10px;
+}
+
+.flowclass-scope .flowcal-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.flowclass-matrix-shell {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.flowclass-matrix-viewport {
+  overflow: auto;
+  contain: strict;
+}
+
+/* 学生工作台矩阵对齐（P2-WBK-UI）：antd 在 scroll.x 下给表头表格写入
+   min-width:100%，宽屏时会把多余宽度按比例分摊到各列；而虚拟化 body
+   的行是固定宽度单元格的 flex 布局，两侧列宽从此不一致，日期表头与
+   下方网格错位。这里把表头表格锁定为"列宽之和"的收缩宽度，与 body
+   逐列等宽；容器更宽时右侧留白，窄表时照常横向滚动。 */
+.flowclass-matrix-shell .ant-table table {
+  width: auto !important;
+  min-width: 0 !important;
+}
+
+@media (max-width: 820px) {
+  .flowclass-scope {
+    overflow-x: auto;
+  }
+}

@@ -1,8 +1,17 @@
 import { DeleteOutlined, FlagFilled, FlagOutlined } from "@ant-design/icons";
-import { Checkbox, Dropdown, Popconfirm, Space, Tag, Typography } from "antd";
+import {
+  Checkbox,
+  Dropdown,
+  Popconfirm,
+  Space,
+  Tag,
+  Tooltip,
+  Typography,
+} from "antd";
 import type { MenuProps } from "antd";
 import { useState } from "react";
 import { buildTaskMenuItems } from "./TaskContextMenu";
+import { getPlatformAdapter } from "../../lib/platform/runtimePlatformAdapter";
 import { RescheduleModal } from "./RescheduleModal";
 import type { Priority, TaskLike } from "./taskApi";
 
@@ -16,10 +25,16 @@ export interface TaskCardProps {
   onReopen: (task: TaskLike) => void;
   /** Called with the new target date when the user picks a date. */
   onReschedule?: (task: TaskLike, targetDate: string) => void;
+  /** Carries a pending task to its next available study date. */
+  onCarryForward?: (task: TaskLike) => void;
   /** Called when the user confirms deletion. */
   onDelete: (task: TaskLike) => void;
   /** Called with an optional target date when the user duplicates. */
   onDuplicate: (task: TaskLike, targetDate?: string) => void;
+  /** 系列推进：生成“序号+1、排到下一天”的新任务（右键菜单项）。 */
+  onCreateNext?: (task: TaskLike) => void;
+  /** 原地升级为长期任务（右键菜单项；仅待办普通任务由父级启用）。 */
+  onConvertToLongTask?: (task: TaskLike) => void;
   /** Called when the user submits a new subtask title. */
   onAddSubTask: (task: TaskLike, title: string) => void;
   /** Called with the chosen main/parent task id when the user links. */
@@ -96,8 +111,11 @@ export function TaskCard({
   onComplete,
   onReopen,
   onReschedule,
+  onCarryForward,
   onDelete,
   onDuplicate,
+  onCreateNext,
+  onConvertToLongTask,
   onAddSubTask,
   onLinkParent,
   onViewDetail,
@@ -108,31 +126,53 @@ export function TaskCard({
   extra,
 }: TaskCardProps) {
   const completed = task.status === "COMPLETED";
-  const locked = task.locked || task.status === "BLOCKED";
+  const locked = task.locked;
+  // INT-CAL-008 / ACC-074: a carried-over source row is history. It keeps its
+  // place so the trail is visible, but it must not be tickable as if it were
+  // still today's work — the live task is the carry-forward target.
+  const history = task.carriedOver === true;
+  const actionable = !locked && !history;
+  // A BLOCKED task is NOT locked: reschedule (drag or context menu) is its
+  // only documented way out (PRD §7.1 BLOCKED → PENDING 人工重新安排), so
+  // the card must keep the menu, drag, priority and delete available. The
+  // checkbox is the single control that stays off: a blocked task cannot be
+  // completed (domain only completes PENDING) nor reopened (COMPLETED only).
+  const completable = actionable && task.status !== "BLOCKED";
   const priority: Priority = isPriority(task.priority) ? task.priority : "NONE";
   const flagColor = priorityFlagColor[priority];
   const [hovered, setHovered] = useState(false);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
 
   const menuItems: MenuProps["items"] = buildTaskMenuItems({
-    locked,
+    // History rows are treated like locked rows in the menu: no reschedule,
+    // no delete, no priority edits on something that already moved on.
+    locked: !actionable,
+    canCarryForward: task.status === "PENDING" && !task.locked,
     priority,
     onSetPriority: onSetPriority
       ? (next) => onSetPriority(task, next)
       : undefined,
     onReschedule: () => setRescheduleOpen(true),
+    onCarryForward: onCarryForward ? () => onCarryForward(task) : undefined,
     onDuplicate: () => onDuplicate(task),
+    onCreateNext: onCreateNext ? () => onCreateNext(task) : undefined,
+    onConvertToLongTask: onConvertToLongTask
+      ? () => onConvertToLongTask(task)
+      : undefined,
     onAddSubTask: () => {
-      // Inline prompt for the subtask title. Using window.prompt keeps the
-      // component dependency-free; parents wanting richer UX can wrap this
-      // card and intercept the onAddSubTask callback instead.
-      const title = window.prompt("子任务标题");
-      if (title && title.trim()) onAddSubTask(task, title.trim());
+      void getPlatformAdapter()
+        .requestText({ title: "子任务标题" })
+        .then((title) => {
+          if (title && title.trim()) onAddSubTask(task, title.trim());
+        });
     },
     onLinkParent: () => {
       if (!onLinkParent) return;
-      const id = window.prompt("关联主任务 ID（UUID）");
-      if (id && id.trim()) onLinkParent(task, id.trim());
+      void getPlatformAdapter()
+        .requestText({ title: "关联主任务 ID（UUID）" })
+        .then((id) => {
+          if (id && id.trim()) onLinkParent(task, id.trim());
+        });
     },
     onViewDetail: () => onViewDetail(task),
     onDelete: () => onDelete(task),
@@ -170,11 +210,16 @@ export function TaskCard({
         >
           <Space
             size="small"
-            style={{ width: "100%", paddingRight: hovered && !locked ? 28 : 0 }}
+            style={{
+              width: "100%",
+              paddingRight: hovered && actionable ? 28 : 0,
+              // Weakened styling for history rows (INT-CAL-008).
+              opacity: history ? 0.6 : undefined,
+            }}
           >
             <Checkbox
               checked={completed}
-              disabled={locked}
+              disabled={!completable}
               onChange={(e) => {
                 if (e.target.checked) onComplete(task);
                 else onReopen(task);
@@ -250,7 +295,22 @@ export function TaskCard({
                     {task.durationMinutes}分钟
                   </Typography.Text>
                 ) : null}
-                {task.carriedOver ? <Tag color="orange">顺延</Tag> : null}
+                {task.carriedOver ? (
+                  // DLY-022: surface the carry origin when the adapter emits
+                  // it; the bare badge still renders as a graceful fallback.
+                  task.carriedFromDate ? (
+                    <Tooltip title={`由 ${task.carriedFromDate} 顺延`}>
+                      <Tag color="orange">顺延</Tag>
+                    </Tooltip>
+                  ) : (
+                    <Tag color="orange">顺延</Tag>
+                  )
+                ) : null}
+                {task.status === "BLOCKED" ? (
+                  <Tooltip title="无可学习日可顺延；改期（拖拽或右键菜单）后回到待办">
+                    <Tag color="red">阻塞</Tag>
+                  </Tooltip>
+                ) : null}
                 {task.locked ? <Tag color="default">锁定</Tag> : null}
                 {extra}
               </Space>
@@ -258,7 +318,7 @@ export function TaskCard({
           </Space>
 
           {/* Hover delete button — fades in, Popconfirm guards the action */}
-          {!locked && onDelete ? (
+          {actionable && onDelete ? (
             <Popconfirm
               title="确认删除"
               description="确定要删除此任务吗？"

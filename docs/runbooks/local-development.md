@@ -1,29 +1,55 @@
 # Local development runbook
 
-## 依赖
+本产品是单机 Tauri 桌面应用。运行时只依赖本机文件系统与本机 SQLite，没有服务器、没有登录、没有 PostgreSQL、没有 Java。浏览器只是开发/测试外壳，不是产品形态。
 
-Node/pnpm、Java 21、Rust stable、Windows WebView2/Build Tools 和 Docker Compose 是不同门禁。缺少任一项时，脚本必须明确失败；不要通过假数据或自动生成 secret 绕过门禁。
+## 依赖门禁
+
+| 依赖                          | 用途                             | 缺失后果                        |
+| ----------------------------- | -------------------------------- | ------------------------------- |
+| Node >= 24.15.0 / pnpm        | 前端构建与测试                   | 无法安装依赖或运行 `pnpm check` |
+| Rust stable                   | Tauri 桌面外壳与本地 SQLite 命令 | 无法 `pnpm dev` / `pnpm build`  |
+| Windows WebView2 Runtime      | 桌面窗口渲染                     | 桌面程序启动后白屏              |
+| Windows Build Tools (MSVC)    | 编译 Rust 依赖                   | `cargo` 链接失败                |
+
+Node 版本以根 `package.json` 的 `engines`（`>=24.15.0`）为准。**不要使用 Node 20/22**（含默认 PATH 里的 22.x）：不满足 `engines` 时 pnpm 会在安装阶段直接拒绝，照旧文档准备环境会踩坑。
+
+缺少任一项时脚本必须明确失败。不要用假数据或自动生成的凭据绕过门禁——本产品没有需要凭据的组件。
 
 ## 启动
 
 ```powershell
-Copy-Item .env.example .env
-$env:ASSISTANT_DB_PASSWORD = Read-Host 'Local DB password'
 pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-为本地登录账号设置 `ASSISTANT_AUTH_PASSWORD_HASH`（BCrypt）后再启动 API。密码 hash 只放在未跟踪的 `.env` 或进程环境，不能提交到仓库；空 hash 会拒绝所有登录。
+`pnpm dev` 直接启动 Tauri 桌面开发窗口（`pnpm dev:desktop`），不会启动任何服务器进程。
 
-`pnpm dev` 先等待 PostgreSQL health check，再启动 API 与 Web。仅验证前端可使用 `pnpm dev:web`；Tauri 使用 `pnpm dev:desktop`。
+仅调试前端布局时可用 `pnpm dev:web`：它在浏览器里跑同一套 UI，但使用 **内存 SQLite**（`sql.js`），关闭标签页数据即丢失。任何持久化、导入或日结验收都必须在桌面程序里做。
+
+## 数据位置
+
+正式桌面运行时的数据库文件：
+
+```text
+%APPDATA%\com.wonderedu.assistant\assistant.db
+```
+
+Schema 由 `apps/desktop/src-tauri/migrations/0001_local_core.sql` 建立，Tauri 启动时自动执行。删除该文件等于清空全部业务数据。
 
 ## 排查顺序
 
-1. `docker compose -f infra/compose/compose.yaml ps` 检查数据库健康状态。
-2. 访问 `http://127.0.0.1:8080/actuator/health` 检查 API liveness/readiness。
-3. 打开 Web 的 Foundation 页面，查看真实 `/api/v1/context` 响应或 requestId 错误。
-4. API 启动失败时确认 Java 21、`ASSISTANT_DB_PASSWORD`、组织配置和 Flyway 日志。
+1. 确认桌面进程已启动，且 `%APPDATA%\com.wonderedu.assistant\assistant.db` 存在。
+2. 用任意 SQLite 客户端打开该文件，确认 `_sqlx_migrations`（或 `sqlx_migrations`）里 version 1 已应用，且 13 张业务表存在。
+3. 页面报“本地数据暂不可用”时，先看数据库文件是否被其他进程独占或被杀软锁定。
+4. 前端行为异常时用 `pnpm dev:web` 复现；若浏览器正常而桌面异常，问题在 Tauri/SQLite 边界（`apps/desktop/src-tauri/src/local_database.rs`）。
+5. `pnpm check` 会跑 `scripts/check-local-runtime.mjs`：它从 `main.tsx` 递归遍历 import 图，如果产品入口重新可达 HTTP transport 或裸 `fetch()`，门禁会失败。
 
 ## 数据重置
 
-重置脚本尚未开放为默认命令。实现时必须要求显式确认、限定 compose project，并在执行前打印解析后的目标卷；禁止对生产目录使用递归删除。
+没有默认的重置命令。要清空本机数据，先关闭桌面程序，再手动删除或重命名 `assistant.db`。
+
+实现自动重置脚本时必须要求显式确认，并在执行前打印解析后的绝对路径；禁止递归删除任何目录。
+
+## 已退役的组件
+
+Spring/PostgreSQL/登录栈已在 F8 阶段移除。历史契约存档见 `docs/reference/retired-server/`，决策记录见 `docs/adr/ADR-002-local-desktop-runtime.md`。

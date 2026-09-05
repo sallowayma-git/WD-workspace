@@ -1,12 +1,16 @@
 # Task Plan: 助教工作台全量实现
 
+> **废止声明（2026-08-28）**：2026-08-20 起，在线架构（中心 PostgreSQL、RBAC、租户隔离、登录会话、Spring 后端）已按 `DocsHarness/04_Flowclass到WD_助教工作台二开融合任务书_v1.0.md` §1.2/§14 有意整体删除，产品冻结为本地单用户 Tauri 桌面 + SQLite。本文件中所有 PostgreSQL / RBAC / 租户 / Phase 0~~3 门禁表述自 2026-08-20 起一并废止；历史内容原样保留，仅供追溯，不得作为后续会话或代理的执行依据（勿据旧文反向重建在线栈）。现行基线为 DocsHarness/04 的 F0~~F9 阶段门禁 + §19 ACC-001~074 验收矩阵 + 本地 SQLite，见 `docs/adr/ADR-002-local-desktop-runtime.md`、`README.md`、`docs/migration/flowclass/acceptance.md`；审计背景见 `docs/migration/flowclass/audit-2026-08-27.md`。
+
 ## Goal
 
 以 `DocsHarness/` 中 PRD、SDD、WBS 为唯一产品/架构基线，持续实现并验证助教工作台，直到满足 PRD AC-001~~015、WBS Phase 0~~3 退出门禁和“轨道稳定、推进幂等、顺延可追溯、勾/拖/写/挂可用”四项业务证明。
 
 ## Current Phase
 
-跨阶段回归审计（进行中；代码覆盖面较广，但 Foundation、Core Domain、Execution、Operationalization 均存在尚未闭合或缺少强证据的门禁）
+（以下为 2026-08-27 融合后现状；上方废止声明之后的 Phase 0~3 段落均为已废止历史。）
+
+Flowclass 融合并发审计报告已于 2026-08-27 落盘（D 线增补待返），见 `docs/migration/flowclass/audit-2026-08-27.md`：核心闭环（持久化、模板/Track 幂等推进、顺延 lineage、三视图同源、locked 三层防线）有代码+测试双证据，无 CRITICAL 数据损坏或虚假验收；缺口集中在门禁记录层与测试覆盖（planning 三件套漂移、F0~~F5 收口说明、DLY 必测场景直接用例、previewCarryForward 等）。当前处于按审计清单的修复轮次，现行门禁口径为 DocsHarness/04 F0~~F9 阶段门禁 + §19 ACC-001~074 验收矩阵 + 本地 SQLite。
 
 ## Phases
 
@@ -76,7 +80,7 @@
 | ----------------------------------------------------------- | ------------------------------------------------- |
 | 最终验收采用 AC-001~015、四阶段门禁和四项业务证明三重基线   | 避免以页面或单元测试数量代替真实闭环              |
 | 先完成 Foundation 数据库身份与授权，再扩展 Phase 1          | 当前静态组织/单用户会让后续所有租户与审计证明失真 |
-| 中心 PostgreSQL 身份/RBAC/持久会话/租户隔离均为硬门禁      | PRD/SDD/WBS 明确采用中心数据库在线协作架构        |
+| 中心 PostgreSQL 身份/RBAC/持久会话/租户隔离均为硬门禁       | PRD/SDD/WBS 明确采用中心数据库在线协作架构        |
 | Access token 保持内存；Refresh token 仅持久化哈希并轮换     | 对齐 SDD 安全边界与现有 token 契约                |
 | Docker 缺失是本机环境阻塞，不降低 CI 的真实 PostgreSQL 门禁 | H2/Mock 不能替代 PostgreSQL/Flyway 证据           |
 | 三份 DocsHarness 文档保持只读                               | 基础文档是需求事实源，不因实现方便而改写          |
@@ -97,7 +101,7 @@
 | 5173 端口曾被已有 Vite listener 占用                  |       1 | 记录为环境冲突；复测前先确认并清理项目遗留进程                |
 | 过往规划文件未同步大量实现进展                        |       1 | 2026-08-16 根据代码/探查结果重建阶段计划                      |
 | `rg.exe` 被 Windows App 权限拒绝                      |       1 | 改用 PowerShell `Get-ChildItem`/`Select-String` 定点检索      |
-| 两条首轮审计代理受 429 中断                           |       1 | 采用其已返回证据并由主代理定点复核；未把中断视为通过           |
+| 两条首轮审计代理受 429 中断                           |       1 | 采用其已返回证据并由主代理定点复核；未把中断视为通过          |
 
 ## Guardrails
 

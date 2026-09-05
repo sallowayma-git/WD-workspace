@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Form, Input, InputNumber, Modal, Select, Space } from "antd";
 import { useEffect, useState } from "react";
-import { ApiError } from "../../lib/api/http";
+import { ApiError } from "../../lib/api/ApiError";
 import { mountTrack } from "./trackApi";
 import {
   getTemplateDetail,
@@ -102,7 +102,7 @@ export function MountTrackModal({
         defaultUnitsPerSession: values.defaultUnitsPerSession,
         priority: values.priority,
         note: values.note && values.note.length > 0 ? values.note : undefined,
-        createFirstInstance: false,
+        createFirstInstance: true,
         confirmOverride: override.open,
       }),
     onSuccess: async (track) => {
@@ -146,7 +146,8 @@ export function MountTrackModal({
       if (
         error instanceof ApiError &&
         (error.status === 409 || error.status === 422) &&
-        (error.code != null && OVERRIDE_CODES.has(error.code))
+        error.code != null &&
+        OVERRIDE_CODES.has(error.code)
       ) {
         setOverride({ open: true, message: error.message });
       }

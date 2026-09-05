@@ -1,0 +1,72 @@
+/* 顶栏全局快速添加（滴答清单式令牌输入）。 */
+
+/* 锚点只是展开面板的定位基准，本身不占额外布局空间。 */
+.quick-add-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+/* 展开面板悬浮在页面之上：绝对定位意味着展开/收起都不会挤压顶栏
+   grid 的三列布局，修掉"切页标签栏错位"。 */
+.quick-add-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 1100;
+  width: 480px;
+  max-width: min(560px, 88vw);
+  padding: 8px;
+  border: 1px solid var(--ant-color-border-secondary, #f0f0f0);
+  border-radius: 10px;
+  background: var(--ant-color-bg-container, #fff);
+  box-shadow: 0 8px 28px rgb(12 39 68 / 18%);
+}
+
+.quick-add-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 令牌输入域：胶囊与裸输入排在同一行，视觉上就是"一个输入框"。 */
+.quick-add-field {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 2px 8px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  background: #fff;
+  cursor: text;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.quick-add-field:focus-within {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgb(22 119 255 / 10%);
+}
+
+.quick-add-core {
+  flex: 1;
+  min-width: 120px;
+  height: 26px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 14px;
+}
+
+.quick-add-core::placeholder {
+  color: #b3b9c4;
+}
+
+.quick-add-token {
+  cursor: pointer;
+  user-select: none;
+  margin-inline-end: 0;
+}

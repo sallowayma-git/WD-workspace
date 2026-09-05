@@ -16,6 +16,11 @@ export type NotificationMessage = {
 export interface PlatformAdapter {
   chooseFile(options?: FileSelectionOptions): Promise<SelectedFile[] | null>;
   saveFile(data: Blob, suggestedName: string): Promise<void>;
+  copyText(text: string): Promise<void>;
+  requestText(options: {
+    title: string;
+    placeholder?: string;
+  }): Promise<string | null>;
   notify(message: NotificationMessage): Promise<void>;
   appVersion(): Promise<string>;
 }

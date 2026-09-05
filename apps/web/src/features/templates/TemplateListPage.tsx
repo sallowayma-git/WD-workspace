@@ -1,28 +1,59 @@
-import { ImportOutlined, SearchOutlined } from "@ant-design/icons";
+import {
+  ImportOutlined,
+  PlusOutlined,
+  SearchOutlined,
+} from "@ant-design/icons";
 import {
   Alert,
   Button,
   Card,
   Empty,
+  Form,
   Input,
+  InputNumber,
+  Modal,
   Skeleton,
   Space,
+  Switch,
   Table,
   Tag,
+  Typography,
 } from "antd";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ApiError } from "../../lib/api/http";
-import { listTemplates, type TaskTemplate } from "./templateApi";
+import { ApiError } from "../../lib/api/ApiError";
+import {
+  createTemplate,
+  listTemplates,
+  type TaskTemplate,
+} from "./templateApi";
+
+interface CreateTemplateValues {
+  name: string;
+  unitLabel: string;
+  defaultDurationMinutes?: number;
+  defaultRequiresDevice: boolean;
+}
 
 export function TemplateListPage() {
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [form] = Form.useForm<CreateTemplateValues>();
+  const queryClient = useQueryClient();
   const templatesQuery = useQuery({
     queryKey: ["templates", search],
     queryFn: () => listTemplates(search),
     retry: false,
+  });
+  const createMutation = useMutation({
+    mutationFn: createTemplate,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["templates"] });
+      form.resetFields();
+      setCreateOpen(false);
+    },
   });
 
   if (templatesQuery.isPending) {
@@ -43,7 +74,7 @@ export function TemplateListPage() {
           description={
             error instanceof ApiError
               ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-              : "请确认 API 已启动并登录。"
+              : "请检查本地数据文件后重试。"
           }
         />
       </Card>
@@ -55,9 +86,18 @@ export function TemplateListPage() {
     <Card
       title="任务模板"
       extra={
-        <Link to="/imports">
-          <Button icon={<ImportOutlined />}>Excel 导入</Button>
-        </Link>
+        <Space>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setCreateOpen(true)}
+          >
+            新建模板
+          </Button>
+          <Link to="/imports">
+            <Button icon={<ImportOutlined />}>Excel 导入</Button>
+          </Link>
+        </Space>
       }
     >
       <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
@@ -73,7 +113,7 @@ export function TemplateListPage() {
           <Button onClick={() => setSearch(searchInput)}>搜索</Button>
         </Space.Compact>
         {data.items.length === 0 ? (
-          <Empty description="当前组织没有模板" />
+          <Empty description="尚无模板" />
         ) : (
           <Table<TaskTemplate>
             rowKey="id"
@@ -116,6 +156,66 @@ export function TemplateListPage() {
           />
         )}
       </Space>
+      <Modal
+        title="新建任务模板"
+        open={createOpen}
+        okText="创建"
+        confirmLoading={createMutation.isPending}
+        onCancel={() => setCreateOpen(false)}
+        onOk={() =>
+          void form.validateFields().then((values) =>
+            createMutation.mutate({
+              ...values,
+              defaultDurationMinutes: values.defaultDurationMinutes ?? null,
+              defaultRequiresDevice: values.defaultRequiresDevice ?? false,
+            }),
+          )
+        }
+      >
+        <Form<CreateTemplateValues>
+          form={form}
+          layout="vertical"
+          initialValues={{ unitLabel: "项", defaultRequiresDevice: false }}
+        >
+          <Typography.Text type="secondary">
+            编码与学科无需填写，系统会自动识别生成。
+          </Typography.Text>
+          <Form.Item
+            name="name"
+            label="模板名称"
+            rules={[{ required: true, message: "请输入模板名称" }]}
+          >
+            <Input maxLength={200} />
+          </Form.Item>
+          <Space align="start">
+            <Form.Item
+              name="unitLabel"
+              label="单元称呼"
+              rules={[{ required: true }]}
+            >
+              <Input maxLength={20} />
+            </Form.Item>
+            <Form.Item name="defaultDurationMinutes" label="默认分钟">
+              <InputNumber min={1} max={1440} />
+            </Form.Item>
+            <Form.Item
+              name="defaultRequiresDevice"
+              label="需要设备"
+              valuePropName="checked"
+            >
+              <Switch />
+            </Form.Item>
+          </Space>
+        </Form>
+        {createMutation.isError ? (
+          <Alert
+            type="error"
+            showIcon
+            title="模板创建失败"
+            description={createMutation.error.message}
+          />
+        ) : null}
+      </Modal>
     </Card>
   );
 }

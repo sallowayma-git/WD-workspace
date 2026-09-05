@@ -20,7 +20,7 @@ import {
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ApiError } from "../../lib/api/http";
+import { ApiError } from "../../lib/api/ApiError";
 import {
   downloadImportErrorsCsv,
   executeImport,
@@ -45,8 +45,7 @@ export function ImportPage() {
 
   const errorsQuery = useQuery({
     queryKey: ["import-errors", errorsJobId],
-    queryFn: () =>
-      getImportErrors(errorsJobId as string, 200, 0),
+    queryFn: () => getImportErrors(errorsJobId as string, 200, 0),
     enabled: errorsJobId !== null,
   });
 
@@ -344,7 +343,9 @@ export function ImportPage() {
                 <Link to="/templates">查看模板列表</Link>
               ) : null}
 
-              {hasErrors && errorsQuery.data && errorsQuery.data.errors.length > 0 ? (
+              {hasErrors &&
+              errorsQuery.data &&
+              errorsQuery.data.errors.length > 0 ? (
                 <Table<ImportError>
                   rowKey={(row, index) =>
                     `${row.sheet ?? ""}-${row.rowNumber ?? ""}-${row.columnName ?? ""}-${index ?? 0}`

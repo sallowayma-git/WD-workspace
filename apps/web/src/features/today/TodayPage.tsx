@@ -4,7 +4,6 @@ import {
   App,
   Button,
   Card,
-  Checkbox,
   Col,
   Empty,
   Row,
@@ -19,9 +18,15 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ApiError } from "../../lib/api/http";
+import { ApiError } from "../../lib/api/ApiError";
 import { TaskCard } from "../tasks/TaskCard";
 import {
+  TaskDetailDrawer,
+  type TaskDetailTarget,
+} from "../tasks/TaskDetailDrawer";
+import { invalidateTaskViews, taskActions } from "../tasks/taskActions";
+import {
+  createNextSeriesTask,
   createSubTask,
   deleteTask,
   duplicateTask,
@@ -30,25 +35,23 @@ import {
   type Priority,
   type TaskLike,
 } from "../tasks/taskApi";
-import { useBusinessDate } from "../foundation/useBusinessDate";
-import { useFeatureFlag } from "../foundation/useFeatureFlag";
 import {
-  completeTask,
+  formatSeriesTitle,
+  parseSeriesTitle,
+} from "../../domain/task/seriesTitle";
+import { useBusinessDate } from "../foundation/useBusinessDate";
+import { convertTaskToLongTask } from "../longtasks/longTaskApi";
+import {
   getToday,
   getTodayCarryovers,
-  reopenTask,
-  undoCarryover,
   type CarryOverItem,
   type TodayResponse,
   type TodayTask,
 } from "./todayApi";
 import { InlineTaskComposer } from "./InlineTaskComposer";
+import { triggerDayClose } from "../admin/dayCloseApi";
 
 const dayNames = ["日", "一", "二", "三", "四", "五", "六"];
-
-function readVersion(current: Record<string, unknown>): number | null {
-  return typeof current.version === "number" ? current.version : null;
-}
 
 /**
  * Adapts a TodayTask summary into the shared TaskCard TaskLike contract.
@@ -66,6 +69,7 @@ function toTaskLike(task: TodayTask): TaskLike {
     durationMinutes: task.durationMinutes,
     locked: task.locked,
     carriedOver: task.carriedOver,
+    carriedFromDate: task.carriedFromDate ?? null,
     scheduledDate: task.scheduledDate,
     version: task.version,
     parentTaskId: task.parentTaskId ?? null,
@@ -76,14 +80,26 @@ function toTaskLike(task: TodayTask): TaskLike {
   };
 }
 
+// INT-CAL-009 同日排序权重：NONE/未设置与 NULL 一样沉底（=3）。
+const priorityWeights: Record<string, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+
+function priorityWeight(priority?: string | null): number {
+  return priorityWeights[priority ?? ""] ?? 3;
+}
+
 /**
- * Sorts tasks by sortOrder when present, otherwise preserves insertion order.
- * Subtasks follow their parent (parentTaskId non-null) naturally because the
- * backend already orders by id within a student group; sortOrder overrides
- * when available.
+ * Same-day task ordering (INT-CAL-009): starred first, then priority weight
+ * (HIGH < MEDIUM < LOW < NONE/unset), then manual sortOrder, then id as the
+ * stable tiebreaker. Mirrors the tasksBetween SQL ORDER BY exactly so this
+ * client-side re-sort never fights the adapter's row order.
  */
 function sortBySortOrder(tasks: TodayTask[]): TodayTask[] {
   return [...tasks].sort((a, b) => {
+    const starDelta = (b.star ? 1 : 0) - (a.star ? 1 : 0);
+    if (starDelta !== 0) return starDelta;
+    const priorityDelta =
+      priorityWeight(a.priority) - priorityWeight(b.priority);
+    if (priorityDelta !== 0) return priorityDelta;
     const sa = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
     const sb = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
     if (sa !== sb) return sa - sb;
@@ -94,23 +110,9 @@ function sortBySortOrder(tasks: TodayTask[]): TodayTask[] {
 export function TodayPage() {
   const queryClient = useQueryClient();
   const { message } = App.useApp();
-  // AC-001: 业务日期由服务端按组织时区 (Asia/Shanghai) 计算,
-  // 优先使用后端 /context 返回的 businessDate 作为初始日期;
-  // 仅在 /context 尚未就绪时回退到浏览器本地日期作为占位。
+  // The desktop adapter owns the local work date used across all views.
   const businessDate = useBusinessDate();
   const [selectedDate, setSelectedDate] = useState(businessDate);
-  const [conflict, setConflict] = useState<{
-    message: string;
-    currentVersion: number | null;
-  } | null>(null);
-
-  // P2-TDY-008: 批量任务操作由 feature flag 控制,默认关闭。
-  // 当后端 /context 返回 featureFlags.bulkTaskOps === true 时启用。
-  const bulkOpsEnabled = useFeatureFlag("bulkTaskOps");
-  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [bulkRunning, setBulkRunning] = useState(false);
 
   const todayQuery = useQuery({
     queryKey: ["today", selectedDate],
@@ -119,6 +121,11 @@ export function TodayPage() {
   });
 
   const [carryoverOpen, setCarryoverOpen] = useState(false);
+  // MAJOR-5: the read-only detail drawer target; fed straight from the task
+  // object the list already holds, so no extra query is needed.
+  const [detailTarget, setDetailTarget] = useState<TaskDetailTarget | null>(
+    null,
+  );
   const carryoversQuery = useQuery({
     queryKey: ["today-carryovers", selectedDate],
     queryFn: () => getTodayCarryovers(selectedDate),
@@ -128,9 +135,8 @@ export function TodayPage() {
 
   const completeMutation = useMutation({
     mutationFn: (params: { taskId: string; version: number }) =>
-      completeTask(params.taskId, params.version, crypto.randomUUID()),
+      taskActions.complete(params.taskId, params.version, crypto.randomUUID()),
     onMutate: async (params) => {
-      setConflict(null);
       await queryClient.cancelQueries({
         queryKey: ["today", selectedDate],
       });
@@ -145,7 +151,11 @@ export function TodayPage() {
                   ...group,
                   tasks: group.tasks.map((task) =>
                     task.id === params.taskId
-                      ? { ...task, status: "COMPLETED" }
+                      ? {
+                          ...task,
+                          status: "COMPLETED",
+                          version: task.version + 1,
+                        }
                       : task,
                   ),
                 })),
@@ -154,28 +164,20 @@ export function TodayPage() {
       );
       return { snapshot };
     },
-    onError: (error, _params, context) => {
+    onError: (_error, _params, context) => {
       if (context?.snapshot) {
         queryClient.setQueryData(["today", selectedDate], context.snapshot);
       }
-      if (error instanceof ApiError && error.status === 409) {
-        const currentVersion = readVersion(error.current);
-        setConflict({
-          message: error.message,
-          currentVersion,
-        });
-      }
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["today", selectedDate] });
+      void invalidateTaskViews(queryClient);
     },
   });
 
   const reopenMutation = useMutation({
     mutationFn: (params: { taskId: string; version: number }) =>
-      reopenTask(params.taskId, params.version, crypto.randomUUID()),
+      taskActions.reopen(params.taskId, params.version, crypto.randomUUID()),
     onMutate: async (params) => {
-      setConflict(null);
       await queryClient.cancelQueries({
         queryKey: ["today", selectedDate],
       });
@@ -190,7 +192,11 @@ export function TodayPage() {
                   ...group,
                   tasks: group.tasks.map((task) =>
                     task.id === params.taskId
-                      ? { ...task, status: "PENDING" }
+                      ? {
+                          ...task,
+                          status: "PENDING",
+                          version: task.version + 1,
+                        }
                       : task,
                   ),
                 })),
@@ -199,20 +205,33 @@ export function TodayPage() {
       );
       return { snapshot };
     },
-    onError: (error, _params, context) => {
+    onError: (_error, _params, context) => {
       if (context?.snapshot) {
         queryClient.setQueryData(["today", selectedDate], context.snapshot);
       }
-      if (error instanceof ApiError && error.status === 409) {
-        const currentVersion = readVersion(error.current);
-        setConflict({
-          message: error.message,
-          currentVersion,
-        });
-      }
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["today", selectedDate] });
+      void invalidateTaskViews(queryClient);
+    },
+  });
+
+  const carryForwardMutation = useMutation({
+    mutationFn: (task: TaskLike) =>
+      taskActions.carryForward(task.id, undefined, "MANUAL_CARRYOVER"),
+    onSuccess: (result) => {
+      if (result.status === "BLOCKED") {
+        void message.warning(result.reason ?? "90 天内没有可用学习日");
+        return;
+      }
+      void message.success(`已顺延至 ${result.targetDate ?? "下一学习日"}`);
+    },
+    onError: (error) => {
+      void message.error(
+        error instanceof ApiError ? error.message : "顺延失败，请稍后重试",
+      );
+    },
+    onSettled: () => {
+      void invalidateTaskViews(queryClient);
     },
   });
 
@@ -225,7 +244,7 @@ export function TodayPage() {
       sourceTaskId: string;
       version: number;
     }) =>
-      undoCarryover(
+      taskActions.undoCarryover(
         params.taskId,
         params.sourceTaskId,
         params.version,
@@ -242,16 +261,11 @@ export function TodayPage() {
       );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["today", selectedDate],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["today-carryovers", selectedDate],
-      });
+      void invalidateTaskViews(queryClient);
     },
   });
 
-  // D2: shared TaskCard callbacks. These mutations all invalidate the today
+  // D2: shared TaskCard callbacks. These mutations invalidate every task
   // view on settle so the list reflects the latest server state. 409 conflicts
   // surface through the same conflict banner as complete/reopen.
   const deleteTaskMutation = useMutation({
@@ -267,7 +281,7 @@ export function TodayPage() {
       );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["today", selectedDate] });
+      void invalidateTaskViews(queryClient);
     },
   });
 
@@ -285,7 +299,52 @@ export function TodayPage() {
       );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["today", selectedDate] });
+      void invalidateTaskViews(queryClient);
+    },
+  });
+
+  // 系列推进（用户反馈）：打勾 day1 后点箭头，下一天出现 day2；序号由本地
+  // 适配器按同前缀最大值 +1 接续，当天已有 day1~day3 时逐行点箭头得到
+  // day4~day6。返回新任务视图用于 toast 预览。
+  const createNextSeriesMutation = useMutation({
+    mutationFn: (task: TaskLike) =>
+      createNextSeriesTask(task.id, { expectedVersion: task.version }),
+    onSuccess: (created) => {
+      void message.success(
+        `已生成「${created.titleSnapshot}」，排在 ${created.scheduledDate ?? "下一天"}`,
+      );
+    },
+    onError: (error) => {
+      void message.error(
+        error instanceof ApiError
+          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
+          : "生成下一项失败，请稍后重试",
+      );
+    },
+    onSettled: () => {
+      void invalidateTaskViews(queryClient);
+    },
+  });
+
+  // 右键“设为长期任务”：普通任务原地升级为长期任务轨道的当前项（任务 id、
+  // 标题快照都不变），之后完成即按标题模板自动生成下一项；历史任务不回填。
+  const convertToLongTaskMutation = useMutation({
+    mutationFn: (task: TaskLike) =>
+      convertTaskToLongTask(task.id, { expectedVersion: task.version }),
+    onSuccess: (result) => {
+      void message.success(
+        `已设为长期任务，当前第 ${result.ordinal} 项，完成后续项将自动接排`,
+      );
+    },
+    onError: (error) => {
+      void message.error(
+        error instanceof ApiError
+          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
+          : "设为长期任务失败，请稍后重试",
+      );
+    },
+    onSettled: () => {
+      void invalidateTaskViews(queryClient);
     },
   });
 
@@ -303,13 +362,17 @@ export function TodayPage() {
       );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["today", selectedDate] });
+      void invalidateTaskViews(queryClient);
     },
   });
 
   const linkMainTaskMutation = useMutation({
     mutationFn: (params: { task: TaskLike; linkedParentTaskId: string }) =>
-      linkMainTask(params.task.id, params.task.version, params.linkedParentTaskId),
+      linkMainTask(
+        params.task.id,
+        params.task.version,
+        params.linkedParentTaskId,
+      ),
     onSuccess: () => {
       void message.success("已关联主任务");
     },
@@ -321,17 +384,14 @@ export function TodayPage() {
       );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["today", selectedDate] });
+      void invalidateTaskViews(queryClient);
     },
   });
 
   // Priority toggle. Optimistic: flip the flag color in the cache so the icon
   // responds immediately; roll back on error.
   const updateTaskMutation = useMutation({
-    mutationFn: (params: {
-      task: TaskLike;
-      priority?: Priority;
-    }) =>
+    mutationFn: (params: { task: TaskLike; priority?: Priority }) =>
       updateTask(params.task.id, {
         expectedVersion: params.task.version,
         priority: params.priority,
@@ -367,88 +427,53 @@ export function TodayPage() {
       if (context?.snapshot) {
         queryClient.setQueryData(["today", selectedDate], context.snapshot);
       }
-      if (error instanceof ApiError && error.status === 409) {
-        const currentVersion = readVersion(error.current);
-        setConflict({
-          message: error.message,
-          currentVersion,
-        });
-      } else {
-        void message.error(
-          error instanceof ApiError
-            ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-            : "更新任务失败，请稍后重试",
-        );
-      }
+      void message.error(
+        error instanceof ApiError ? error.message : "更新任务失败，请稍后重试",
+      );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["today", selectedDate] });
+      void invalidateTaskViews(queryClient);
     },
   });
 
   // D2: reschedule is driven by RescheduleModal inside TaskCard; the card
   // calls onReschedule(task, targetDate) only after a successful PATCH, so
   // the page just needs to refresh the view to reflect the new date.
+  // 日结是助教每天点一次的动作，放在首页统计卡片右侧即可。结果只需一句话：
+  // 顺延了几项、有没有卡住的，逐项运行日志对使用者没有意义。
+  const dayCloseMutation = useMutation({
+    mutationFn: (date: string) => triggerDayClose(date),
+    onSuccess: (summary) => {
+      void invalidateTaskViews(queryClient);
+      if (summary.scanned === 0) {
+        void message.success("日结完成：没有需要顺延的任务");
+        return;
+      }
+      const parts = [`已顺延 ${summary.carried} 项`];
+      if (summary.blocked > 0) parts.push(`${summary.blocked} 项无可用学习日`);
+      if (summary.failed > 0) parts.push(`${summary.failed} 项失败`);
+      const text = `日结完成：${parts.join("，")}`;
+      if (summary.blocked > 0 || summary.failed > 0) {
+        void message.warning(text);
+      } else {
+        void message.success(text);
+      }
+    },
+    onError: (error: unknown) => {
+      void message.error(
+        error instanceof ApiError ? error.message : "日结执行失败，请稍后重试",
+      );
+    },
+  });
+
   const handleRescheduleSuccess = () => {
-    void queryClient.invalidateQueries({ queryKey: ["today", selectedDate] });
+    void invalidateTaskViews(queryClient);
   };
 
   const shiftDate = (days: number) => {
     const date = new Date(selectedDate);
     date.setDate(date.getDate() + days);
     setSelectedDate(date.toISOString().slice(0, 10));
-    setSelectedTaskIds(new Set());
-  };
-
-  // P2-TDY-008: 批量操作按顺序执行,复用 completeTask/reopenTask。
-  // 每个任务携带各自的 version;遇到 409 即终止剩余批次并提示冲突。
-  const runBulk = async (action: "complete" | "reopen") => {
-    const ids = Array.from(selectedTaskIds);
-    if (ids.length === 0) return;
-    setBulkRunning(true);
-    let firstConflict: ApiError | null = null;
-    let succeeded = 0;
-    for (const id of ids) {
-      const task = data?.students
-        .flatMap((g) => g.tasks)
-        .find((t) => t.id === id);
-      if (!task) continue;
-      try {
-        if (action === "complete") {
-          await completeTask(task.id, task.version, crypto.randomUUID());
-        } else {
-          await reopenTask(task.id, task.version, crypto.randomUUID());
-        }
-        succeeded += 1;
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 409) {
-          firstConflict = error;
-          break;
-        }
-        // 非 409 错误:终止批次并提示。
-        void message.error(
-          error instanceof ApiError
-            ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-            : "批量操作失败,请稍后重试",
-        );
-        break;
-      }
-    }
-    void queryClient.invalidateQueries({ queryKey: ["today", selectedDate] });
-    setSelectedTaskIds(new Set());
-    if (firstConflict) {
-      setConflict({
-        message: firstConflict.message,
-        currentVersion: readVersion(firstConflict.current),
-      });
-    } else if (succeeded > 0) {
-      void message.success(
-        action === "complete"
-          ? `已批量完成 ${succeeded} 项任务`
-          : `已批量重开 ${succeeded} 项任务`,
-      );
-    }
-    setBulkRunning(false);
   };
 
   if (todayQuery.isPending) {
@@ -470,7 +495,7 @@ export function TodayPage() {
           description={
             error instanceof ApiError
               ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-              : "请确认 API 已启动并登录。"
+              : "请检查本地数据文件后重试。"
           }
           action={
             <Button type="link" onClick={() => void todayQuery.refetch()}>
@@ -486,11 +511,6 @@ export function TodayPage() {
   const dateObj = new Date(selectedDate);
   const dayName = dayNames[dateObj.getDay()];
 
-  // P2-TDY-008: 仅当批量操作 flag 开启时计算所有任务 id(用于全选/统计)。
-  const allTaskIds = bulkOpsEnabled
-    ? data.students.flatMap((group) => group.tasks.map((task) => task.id))
-    : [];
-
   return (
     <Spin
       spinning={
@@ -501,8 +521,7 @@ export function TodayPage() {
         duplicateTaskMutation.isPending ||
         createSubTaskMutation.isPending ||
         linkMainTaskMutation.isPending ||
-        updateTaskMutation.isPending ||
-        bulkRunning
+        updateTaskMutation.isPending
       }
     >
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -531,7 +550,17 @@ export function TodayPage() {
           </Space>
         </Card>
 
-        <Card>
+        <Card
+          extra={
+            <Button
+              type="primary"
+              loading={dayCloseMutation.isPending}
+              onClick={() => dayCloseMutation.mutate(selectedDate)}
+            >
+              执行日结
+            </Button>
+          }
+        >
           <Space size="large" wrap>
             <Statistic title="学生数" value={data.metrics.totalStudents} />
             <Statistic title="待完成" value={data.metrics.totalPendingTasks} />
@@ -556,52 +585,6 @@ export function TodayPage() {
             />
           </Space>
         </Card>
-
-        {bulkOpsEnabled ? (
-          <Card size="small">
-            <Space
-              style={{ justifyContent: "space-between", width: "100%" }}
-              wrap
-            >
-              <Space>
-                <Checkbox
-                  checked={
-                    allTaskIds.length > 0 &&
-                    selectedTaskIds.size === allTaskIds.length
-                  }
-                  indeterminate={
-                    selectedTaskIds.size > 0 &&
-                    selectedTaskIds.size < allTaskIds.length
-                  }
-                  onChange={(e) => {
-                    setSelectedTaskIds(
-                      e.target.checked ? new Set(allTaskIds) : new Set(),
-                    );
-                  }}
-                >
-                  全选({selectedTaskIds.size}/{allTaskIds.length})
-                </Checkbox>
-                <Button
-                  size="small"
-                  disabled={selectedTaskIds.size === 0}
-                  onClick={() => void runBulk("complete")}
-                >
-                  批量完成
-                </Button>
-                <Button
-                  size="small"
-                  disabled={selectedTaskIds.size === 0}
-                  onClick={() => void runBulk("reopen")}
-                >
-                  批量重开
-                </Button>
-              </Space>
-              <Typography.Text type="secondary">
-                批量操作(beta)
-              </Typography.Text>
-            </Space>
-          </Card>
-        ) : null}
 
         <Card>
           <Space style={{ justifyContent: "space-between", width: "100%" }}>
@@ -687,6 +670,13 @@ export function TodayPage() {
                       {sortBySortOrder(group.tasks).map((task) => {
                         const taskLike = toTaskLike(task);
                         const isSubTask = Boolean(task.parentTaskId);
+                        // 系列任务（手工/导入、标题带尾号）在行尾显示 → 箭头：
+                        // 完成打勾后点一下即生成“序号+1、排到下一天”的新任务。
+                        // TRACK 任务的下一项由轨道完成时自动推进，不在此重复。
+                        const series =
+                          taskLike.sourceType === "TRACK"
+                            ? null
+                            : parseSeriesTitle(taskLike.title);
                         return (
                           <div
                             key={task.id}
@@ -712,9 +702,41 @@ export function TodayPage() {
                                 })
                               }
                               onReschedule={() => handleRescheduleSuccess()}
+                              onCarryForward={(t) =>
+                                carryForwardMutation.mutate(t)
+                              }
                               onDelete={(t) => deleteTaskMutation.mutate(t)}
                               onDuplicate={(t) =>
                                 duplicateTaskMutation.mutate(t)
+                              }
+                              onCreateNext={
+                                series
+                                  ? (t) => createNextSeriesMutation.mutate(t)
+                                  : undefined
+                              }
+                              extra={
+                                series ? (
+                                  <Button
+                                    size="small"
+                                    type="link"
+                                    aria-label={`生成下一项（${formatSeriesTitle(series, series.number + 1)}）`}
+                                    title="生成下一项并排到下一天，序号自动接续"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      createNextSeriesMutation.mutate(taskLike);
+                                    }}
+                                  >
+                                    →
+                                  </Button>
+                                ) : undefined
+                              }
+                              onConvertToLongTask={
+                                taskLike.sourceType === "AD_HOC" &&
+                                taskLike.status === "PENDING" &&
+                                !taskLike.locked
+                                  ? (t) => convertToLongTaskMutation.mutate(t)
+                                  : undefined
                               }
                               onAddSubTask={(t, title) =>
                                 createSubTaskMutation.mutate({
@@ -729,33 +751,16 @@ export function TodayPage() {
                                 })
                               }
                               onViewDetail={(t) =>
-                                void message.info(`任务 ${t.id} 详情待实现`)
+                                setDetailTarget({
+                                  task: t,
+                                  studentName: group.studentName,
+                                })
                               }
                               onSetPriority={(t, next) =>
                                 updateTaskMutation.mutate({
                                   task: t,
                                   priority: next,
                                 })
-                              }
-                              extra={
-                                bulkOpsEnabled ? (
-                                  <Checkbox
-                                    checked={selectedTaskIds.has(task.id)}
-                                    onClick={(e) => e.stopPropagation()}
-                                    onChange={(e) =>
-                                      setSelectedTaskIds((prev) => {
-                                        const next = new Set(prev);
-                                        if (e.target.checked) {
-                                          next.add(task.id);
-                                        } else {
-                                          next.delete(task.id);
-                                        }
-                                        return next;
-                                      })
-                                    }
-                                    aria-label={`选择任务 ${task.shortTitle ?? task.title}`}
-                                  />
-                                ) : null
                               }
                             />
                           </div>
@@ -766,6 +771,7 @@ export function TodayPage() {
 
                   <InlineTaskComposer
                     studentId={group.studentId}
+                    studentName={group.studentName}
                     scheduledDate={data.businessDate}
                   />
                 </Card>
@@ -774,26 +780,7 @@ export function TodayPage() {
           </Row>
         )}
 
-        {conflict ? (
-          <Alert
-            type="warning"
-            title="任务已被其他用户修改"
-            showIcon
-            description={
-              conflict.currentVersion !== null
-                ? `${conflict.message}（服务器当前版本 v${conflict.currentVersion}）。已为您重新加载最新数据，请再次勾选。`
-                : conflict.message
-            }
-            action={
-              <Button type="link" onClick={() => void todayQuery.refetch()}>
-                重新加载
-              </Button>
-            }
-          />
-        ) : null}
-
         {(completeMutation.isError || reopenMutation.isError) &&
-        !conflict &&
         !(completeMutation.isPending || reopenMutation.isPending) ? (
           <Alert
             type="error"
@@ -806,6 +793,10 @@ export function TodayPage() {
           />
         ) : null}
       </Space>
+      <TaskDetailDrawer
+        target={detailTarget}
+        onClose={() => setDetailTarget(null)}
+      />
     </Spin>
   );
 }

@@ -22,22 +22,13 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
-      - run: pnpm --dir apps/web check
+      # check:web runs the local-runtime guard first: it walks the import graph
+      # from main.tsx and fails if the product entry can reach an HTTP
+      # transport, an auth store or a bare fetch() again (ACC-001/ACC-003).
+      - run: pnpm run check:web
       - run: pnpm run check:packages
-      - run: pnpm --dir apps/web test:run
+      - run: pnpm run test:web
       - run: pnpm --dir apps/web build
-
-  api:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: gradle
-      - run: bash ./gradlew check postgresIntegrationTest
-        working-directory: apps/api
 
   desktop:
     runs-on: windows-latest
@@ -51,5 +42,8 @@ jobs:
           node-version: 24.15.0
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - run: pnpm install --frozen-lockfile
+      - run: pnpm run check:desktop
       - run: pnpm --dir apps/desktop tauri build --no-bundle

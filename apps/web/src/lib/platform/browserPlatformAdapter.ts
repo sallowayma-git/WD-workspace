@@ -37,6 +37,15 @@ export const browserPlatformAdapter: PlatformAdapter = {
     URL.revokeObjectURL(url);
     return Promise.resolve();
   },
+  async copyText(text: string): Promise<void> {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error("当前运行环境不支持复制");
+    }
+    await navigator.clipboard.writeText(text);
+  },
+  requestText({ title, placeholder }: { title: string; placeholder?: string }) {
+    return Promise.resolve(window.prompt(title, placeholder ?? ""));
+  },
   async notify(message: NotificationMessage): Promise<void> {
     if (!("Notification" in window)) return;
     if (Notification.permission === "default")

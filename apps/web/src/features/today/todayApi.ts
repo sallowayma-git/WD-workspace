@@ -1,27 +1,48 @@
 import { z } from "zod";
-import { getJson, postJson } from "../../lib/api/http";
+import { getDataAdapter } from "../../data/runtime";
+import {
+  taskCardContractFields,
+  taskViewSchema,
+} from "../tasks/taskViewSchema";
 
-const todayTaskSchema = z.object({
-  id: z.string().uuid(),
-  title: z.string(),
-  shortTitle: z.string().nullable(),
-  status: z.string(),
-  sourceType: z.string(),
-  itemOrdinal: z.number().nullable(),
-  durationMinutes: z.number().nullable(),
-  locked: z.boolean(),
-  carriedOver: z.boolean(),
-  scheduledDate: z.string().nullable(),
-  version: z.number(),
-  // Shared TaskCard contract (D2 wiring). The backend TodayTaskSummary does
-  // not yet emit these columns; they are optional so the field stays undefined
-  // when absent, and the page falls back to the existing flat list behavior.
-  parentTaskId: z.string().uuid().nullable().optional(),
-  linkedParentTaskId: z.string().uuid().nullable().optional(),
-  priority: z.string().nullable().optional(),
-  sortOrder: z.number().nullable().optional(),
-  star: z.boolean().nullable().optional(),
-});
+// Derived from the taskViewSchema base, same pattern as the schedule/workbench
+// summaries: TodayTask is the TaskCard summary projection of a task_instance
+// row for the Today page. carriedOver is tightened back to a required boolean
+// (the base carries it nullable+optional for looser summary views) because the
+// adapter's taskSummary always computes a concrete boolean
+// (status === "CARRIED_OVER") and TodayPage's toTaskLike hands it to
+// TaskLike.carriedOver (boolean | undefined, no null) — the strict shape keeps
+// parse behavior identical to the previous hand-maintained copy.
+const todayTaskSchema = taskViewSchema
+  .pick({
+    id: true,
+    title: true,
+    shortTitle: true,
+    status: true,
+    sourceType: true,
+    itemOrdinal: true,
+    durationMinutes: true,
+    locked: true,
+    carriedOver: true,
+    // DLY-022: original date this row was carried from — drives the TaskCard
+    // 顺延 tooltip when present.
+    carriedFromDate: true,
+    scheduledDate: true,
+    version: true,
+    parentTaskId: true,
+    linkedParentTaskId: true,
+    priority: true,
+    sortOrder: true,
+    star: true,
+  })
+  .extend({
+    carriedOver: z.boolean(),
+    // Shared TaskCard contract (D2 wiring). The backend TodayTaskSummary does
+    // not yet emit these columns; they are optional so the field stays
+    // undefined when absent, and the page falls back to the existing flat
+    // list behavior.
+    ...taskCardContractFields,
+  });
 
 const todayStudentGroupSchema = z.object({
   studentId: z.string().uuid(),
@@ -70,19 +91,15 @@ export type CarryOverItem = z.infer<typeof carryOverItemSchema>;
 export function getTodayCarryovers(
   targetDate: string,
 ): Promise<CarryOverItem[]> {
-  const params = new URLSearchParams();
-  params.set("targetDate", targetDate);
-  return getJson(
-    `/today/carryovers?${params.toString()}`,
-    z.array(carryOverItemSchema),
-  );
+  return getDataAdapter()
+    .getTodayCarryovers(targetDate)
+    .then((value) => z.array(carryOverItemSchema).parse(value));
 }
 
 export function getToday(date?: string): Promise<TodayResponse> {
-  const params = new URLSearchParams();
-  if (date) params.set("date", date);
-  const suffix = params.size === 0 ? "" : `?${params.toString()}`;
-  return getJson(`/today${suffix}`, todayResponseSchema);
+  return getDataAdapter()
+    .getToday(date)
+    .then((value) => todayResponseSchema.parse(value));
 }
 
 export function completeTask(
@@ -90,11 +107,35 @@ export function completeTask(
   expectedVersion: number,
   idempotencyKey: string,
 ): Promise<unknown> {
-  return postJson(`/tasks/${taskId}/complete`, z.unknown(), {
+  return getDataAdapter().completeTask({
     taskId,
     expectedVersion,
     idempotencyKey,
   });
+}
+
+const carryForwardResultSchema = z.object({
+  sourceTaskId: z.string().uuid(),
+  targetTaskId: z.string().uuid().nullable(),
+  targetDate: z.string().nullable(),
+  status: z.string(),
+  reason: z.string().nullable(),
+});
+
+export type CarryForwardResult = z.infer<typeof carryForwardResultSchema>;
+
+export function carryForwardTask(
+  sourceTaskId: string,
+  targetDate?: string,
+  reason?: string,
+): Promise<CarryForwardResult> {
+  return getDataAdapter()
+    .carryForwardTask({
+      sourceTaskId,
+      targetDate: targetDate ?? null,
+      reason: reason ?? null,
+    })
+    .then((value) => carryForwardResultSchema.parse(value));
 }
 
 const undoCarryOverResultSchema = z.object({
@@ -113,11 +154,14 @@ export function undoCarryover(
   expectedVersion: number,
   idempotencyKey: string,
 ): Promise<UndoCarryOverResult> {
-  return postJson(`/tasks/${taskId}/undo-carryover`, undoCarryOverResultSchema, {
-    sourceTaskId,
-    expectedVersion,
-    idempotencyKey,
-  });
+  return getDataAdapter()
+    .undoCarryover({
+      taskId,
+      sourceTaskId,
+      expectedVersion,
+      idempotencyKey,
+    })
+    .then((value) => undoCarryOverResultSchema.parse(value));
 }
 
 export function reopenTask(
@@ -125,9 +169,7 @@ export function reopenTask(
   expectedVersion: number,
   idempotencyKey: string,
 ): Promise<void> {
-  return postJson(`/tasks/${taskId}/reopen`, z.unknown(), {
-    taskId,
-    expectedVersion,
-    idempotencyKey,
-  }).then(() => undefined);
+  return getDataAdapter()
+    .reopenTask({ taskId, expectedVersion, idempotencyKey })
+    .then(() => undefined);
 }

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getJson } from "../../lib/api/http";
+import { getDataAdapter } from "../../data/runtime";
 
 const searchItemSchema = z.object({
   id: z.string().uuid(),
@@ -29,8 +29,7 @@ export function searchGlobal(
   query: string,
   limit = 20,
 ): Promise<SearchResponse> {
-  const params = new URLSearchParams();
-  params.set("q", query);
-  params.set("limit", String(limit));
-  return getJson(`/search?${params.toString()}`, searchResponseSchema);
+  return getDataAdapter()
+    .searchGlobal(query, limit)
+    .then((value) => searchResponseSchema.parse(value));
 }

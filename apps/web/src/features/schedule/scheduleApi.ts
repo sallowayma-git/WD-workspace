@@ -1,26 +1,44 @@
 import { z } from "zod";
-import { getJson, postJson } from "../../lib/api/http";
+import { getDataAdapter } from "../../data/runtime";
+import {
+  taskCardContractFields,
+  taskViewSchema,
+} from "../tasks/taskViewSchema";
 
-const scheduleTaskSchema = z.object({
-  id: z.string().uuid(),
-  title: z.string(),
-  shortTitle: z.string().nullable(),
-  status: z.string(),
-  sourceType: z.string(),
-  itemOrdinal: z.number().nullable(),
-  durationMinutes: z.number().nullable(),
-  locked: z.boolean(),
-  version: z.number(),
-  // Shared TaskCard contract (D2 wiring). The backend ScheduleTaskSummary
-  // does not yet emit these columns; they are optional so the field stays
-  // undefined when absent, and toTaskLike passes the value through instead of
-  // hardcoding it (so star/priority reflect server state when present).
-  parentTaskId: z.string().uuid().nullable().optional(),
-  linkedParentTaskId: z.string().uuid().nullable().optional(),
-  priority: z.string().nullable().optional(),
-  sortOrder: z.number().nullable().optional(),
-  star: z.boolean().nullable().optional(),
-});
+// The local adapter's taskSummary emits the TaskCard contract columns; they
+// stay optional so a payload without them still parses (D2 wiring — shared
+// shape in taskCardContractFields), and toTaskLike passes each value through
+// instead of hardcoding it (so star/priority reflect adapter state when
+// present). status is narrowed to the calendar's five known statuses.
+const scheduleTaskSchema = taskViewSchema
+  .pick({
+    id: true,
+    title: true,
+    shortTitle: true,
+    status: true,
+    sourceType: true,
+    itemOrdinal: true,
+    durationMinutes: true,
+    locked: true,
+    version: true,
+    carriedOver: true,
+    carriedFromDate: true,
+    parentTaskId: true,
+    linkedParentTaskId: true,
+    priority: true,
+    sortOrder: true,
+    star: true,
+  })
+  .extend({
+    status: z.enum([
+      "PENDING",
+      "COMPLETED",
+      "CARRIED_OVER",
+      "BLOCKED",
+      "CANCELLED",
+    ]),
+    ...taskCardContractFields,
+  });
 
 const scheduleDaySchema = z.object({
   date: z.string(),
@@ -49,15 +67,9 @@ export function getSchedule(
   studentId: string,
   params?: { from?: string; to?: string; view?: string },
 ): Promise<ScheduleResponse> {
-  const search = new URLSearchParams();
-  if (params?.from) search.set("from", params.from);
-  if (params?.to) search.set("to", params.to);
-  search.set("view", params?.view ?? "week");
-  const suffix = `?${search.toString()}`;
-  return getJson(
-    `/students/${studentId}/schedule${suffix}`,
-    scheduleResponseSchema,
-  );
+  return getDataAdapter()
+    .getSchedule(studentId, params)
+    .then((value) => scheduleResponseSchema.parse(value));
 }
 
 export function rescheduleTask(
@@ -65,11 +77,15 @@ export function rescheduleTask(
   expectedVersion: number,
   targetDate: string,
   overrideReason?: string,
+  targetStudentId?: string,
 ): Promise<void> {
-  return postJson(`/tasks/${taskId}/reschedule`, z.unknown(), {
-    taskId,
-    expectedVersion,
-    targetDate,
-    overrideReason: overrideReason ?? null,
-  }).then(() => undefined);
+  return getDataAdapter()
+    .rescheduleTask({
+      taskId,
+      expectedVersion,
+      targetDate,
+      overrideReason: overrideReason ?? null,
+      targetStudentId: targetStudentId ?? null,
+    })
+    .then(() => undefined);
 }

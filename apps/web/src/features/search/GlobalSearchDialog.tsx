@@ -181,11 +181,7 @@ function SearchDialogBody({
         <Empty description="未找到匹配结果" style={{ marginTop: 24 }} />
       ) : null}
 
-      <div
-        id="global-search-listbox"
-        role="listbox"
-        aria-label="全局搜索结果"
-      >
+      <div id="global-search-listbox" role="listbox" aria-label="全局搜索结果">
         {searchQuery.data?.groups.map((group) => {
           if (group.items.length === 0) return null;
           const groupStartIndex = runningIndex;

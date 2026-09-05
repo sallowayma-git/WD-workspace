@@ -1,59 +1,61 @@
 # 助教工作台
 
-以学生为核心、以时间为横轴、以连续任务轨道为进度来源、以 Checklist 为执行入口、以自动顺延为减负机制的助教业务工作台。
+助教工作台是单机 Tauri 桌面应用。学生、学习日、长期任务、课程模板、Track、任务、Today、矩阵、排期、生词、导入和日结数据均保存在本机 SQLite，不需要登录、Java、PostgreSQL 或远端 API。
 
-## 当前阶段
+长期任务（SEQUENCE）按「标题模板 + 序号」自动接排：挂载后学生完成一项，下一项出现在下一个可学习日；顺延保持序号不变。逐项定义的课程（ITEMIZED，Excel 导入）继续使用模板版本机制，见 `docs/adr/ADR-003-sequence-long-task.md`。
 
-项目正在执行 WBS Phase 0（Foundation）。已冻结的完成条件是 PRD AC-001~015、WBS 各阶段退出门禁，以及轨道、执行、顺延、减负四项最终业务证明。未进入阶段的页面会明确标注为未实现，不以静态占位冒充业务完成。
+## 产品边界
+
+- 正式运行形态：Tauri 桌面应用。
+- 唯一业务真值：应用数据目录中的 `assistant.db`。
+- React/Vite 仅作为桌面 UI 技术栈；浏览器入口只用于开发和测试。
+- 不包含多用户、RBAC、多机构、云同步、课程售卖、班课、出勤、支付或通知中心。
 
 ## 目录
 
 ```text
-apps/web       React/Vite 浏览器 UI（同时供 Tauri 使用）
-apps/desktop   Tauri 2 薄桌面壳
-apps/api       Spring Boot/Spring Modulith API
-packages       生成客户端、设计令牌和测试 fixture
-infra          本地依赖、容器与监控定义
-scripts        可复现的开发/校验入口
-docs           ADR、API 与运行手册
-DocsHarness    产品、架构与实施基线
+apps/web       React/Vite 桌面 UI
+apps/desktop   Tauri 2 桌面运行时与 SQLite migration
+packages       共享类型、设计令牌和测试 fixture
+scripts        本地运行边界校验
+docs           迁移来源、决策和验收记录
+DocsHarness    产品与实施基线
 ```
 
 ## 前置依赖
 
 - Node.js 24.15+ 与 pnpm 11.19
-- Java 21（API）
-- Rust stable、Windows WebView2/Build Tools（Tauri）
-- Docker Compose（PostgreSQL 18 集成环境）
+- Rust stable
+- Windows WebView2 与 Microsoft C++ Build Tools
 
-本机缺少的前置依赖会由脚本 fail-fast 并给出安装提示，不会静默改源码或使用生产 secret。
-
-## 快速开始
+## 开发
 
 ```powershell
-Copy-Item .env.example .env
 pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-`pnpm dev` 负责启动 PostgreSQL、API 和 Web。只开发前端可运行 `pnpm dev:web`；桌面开发使用 `pnpm dev:desktop`。
+`pnpm dev` 启动 Tauri 桌面应用。`pnpm dev:web` 只启动开发/测试壳，并使用内存 SQLite；它不是产品部署方式。
 
-首次登录需要在未跟踪的 `.env` 中设置 `ASSISTANT_AUTH_PASSWORD_HASH`（BCrypt）。API 不接受明文密码配置，也不会自动生成生产 secret；没有 hash 时登录会明确返回 `INVALID_CREDENTIALS`。
-
-## 校验
+## 校验与构建
 
 ```powershell
 pnpm check
-pnpm build:web
-pnpm build:api
-pnpm build:desktop:no-bundle
+pnpm build
 ```
 
-完整数据库、模块、OpenAPI、E2E、许可证和三端构建门禁会在 CI 中执行。当前环境阻塞与已验证结果记录在 `progress.md`。
+`pnpm check` 校验正式入口不可达 HTTP/Auth transport，并运行 Web 类型、测试与 Rust 门禁。`pnpm build` 生成本地桌面可执行文件，不启动或构建任何服务器组件。
 
-## 配置与安全
+Windows 可执行文件位于：
 
-- 只把非敏感本地默认值写入 `.env.example`。
-- 数据库密码、令牌密钥、签名证书和更新密钥不得提交。
-- 浏览器只读取 `VITE_*` 非敏感变量。
-- 桌面端不直接连接 PostgreSQL，业务状态以 API 为真值。
+```text
+apps/desktop/src-tauri/target/release/assistant_desktop.exe
+```
+
+SQLite 数据文件通常位于：
+
+```text
+%APPDATA%/com.wonderedu.assistant/assistant.db
+```
+
+迁移验收证据见 `docs/migration/flowclass/acceptance.md`。

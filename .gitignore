@@ -4,20 +4,13 @@ node_modules/
 dist/
 coverage/
 
-# Java / Gradle
-.gradle/
-build/
-out/
-*.class
-
 # Rust / Tauri
 target/
 apps/desktop/src-tauri/gen/schemas/
 
-# Local configuration and generated secrets
+# Local configuration
 .env
 .env.*
-!.env.example
 *.local
 
 # IDE / OS
@@ -30,3 +23,7 @@ Thumbs.db
 .tooling/
 .data/
 *.log
+
+# Local agent/session planning artifacts
+.planning/
+.workbuddy/

@@ -2,22 +2,17 @@ import { SearchOutlined } from "@ant-design/icons";
 import { Button, Layout, Space, Tooltip, Typography } from "antd";
 import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { useAuth } from "../features/auth/AuthProvider";
 import { GlobalSearchDialog } from "../features/search/GlobalSearchDialog";
-
-const ADMIN_ROLES = ["ADMIN"];
+import { GlobalQuickAdd } from "../features/quickadd/GlobalQuickAdd";
 
 const navigation = [
   { to: "/today", label: "今日工作" },
   { to: "/workbench", label: "学生工作台" },
   { to: "/students", label: "学生列表" },
-  { to: "/templates", label: "任务模板" },
+  { to: "/long-tasks", label: "长期任务" },
 ] as const;
 
 export function AppShell() {
-  const { session } = useAuth();
-  const showAdminEntry =
-    session?.user.roles.some((role) => ADMIN_ROLES.includes(role)) ?? false;
   const [searchOpen, setSearchOpen] = useState(false);
 
   // FR-SEARCH-003 / P3-SRC-007: global Ctrl+K (Windows/Linux) or Cmd+K (macOS)
@@ -57,18 +52,10 @@ export function AppShell() {
               {item.label}
             </NavLink>
           ))}
-          {showAdminEntry ? (
-            <NavLink
-              className={({ isActive }) =>
-                `nav-link${isActive ? " nav-link-active" : ""}`
-              }
-              to="/admin/day-close"
-            >
-              日结管理
-            </NavLink>
-          ) : null}
         </nav>
         <Space className="top-navigation-actions">
+          {/* 快速添加放在全局搜索左侧：学生名/日期自动匹配后一键建任务。 */}
+          <GlobalQuickAdd />
           <Tooltip title="全局搜索 (Ctrl/Cmd+K)">
             <Button
               aria-label="打开全局搜索"
@@ -79,7 +66,6 @@ export function AppShell() {
               全局搜索
             </Button>
           </Tooltip>
-          <span className="phase-badge">Core Domain</span>
         </Space>
       </Layout.Header>
       <Layout.Content className="app-content">

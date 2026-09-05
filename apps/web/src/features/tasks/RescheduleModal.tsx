@@ -1,7 +1,7 @@
 import { Form, Input, Modal } from "antd";
 import { useState } from "react";
-import { ApiError } from "../../lib/api/http";
-import { rescheduleTask } from "../schedule/scheduleApi";
+import { ApiError } from "../../lib/api/ApiError";
+import { taskActions } from "./taskActions";
 
 export interface RescheduleModalProps {
   open: boolean;
@@ -55,7 +55,7 @@ export function RescheduleModal({
         const values = await form.validateFields();
         setSubmitting(true);
         setError(null);
-        await rescheduleTask(
+        await taskActions.reschedule(
           taskId,
           taskVersion,
           values.date,

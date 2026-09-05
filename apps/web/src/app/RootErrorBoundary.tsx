@@ -24,7 +24,7 @@ export class RootErrorBoundary extends Component<
         <Result
           status="error"
           title="应用遇到未处理错误"
-          subTitle="业务数据没有被静默修改。请重试；如果持续失败，请携带 requestId 联系维护者。"
+          subTitle="业务数据没有被静默修改。请重试；如果持续失败，请记录操作步骤并联系维护者。"
           extra={
             <Button
               onClick={() => {

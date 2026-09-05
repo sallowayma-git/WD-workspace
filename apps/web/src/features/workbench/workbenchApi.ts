@@ -1,27 +1,45 @@
 import { z } from "zod";
-import { getJson } from "../../lib/api/http";
+import { getDataAdapter } from "../../data/runtime";
+import {
+  taskCardContractFields,
+  taskViewSchema,
+} from "../tasks/taskViewSchema";
 
-const taskSummarySchema = z.object({
-  id: z.string().uuid(),
-  shortTitle: z.string().nullable(),
-  status: z.string(),
-  version: z.number(),
-  // Shared TaskCard contract (D2 wiring). The backend WorkbenchTaskSummary
-  // only emits the four fields above; the rest are optional so the page can
-  // adapt the summary into a TaskLike without a backend change.
-  title: z.string().nullable().optional(),
-  sourceType: z.string().nullable().optional(),
-  itemOrdinal: z.number().nullable().optional(),
-  durationMinutes: z.number().nullable().optional(),
-  locked: z.boolean().nullable().optional(),
-  carriedOver: z.boolean().nullable().optional(),
-  scheduledDate: z.string().nullable().optional(),
-  parentTaskId: z.string().uuid().nullable().optional(),
-  linkedParentTaskId: z.string().uuid().nullable().optional(),
-  priority: z.string().nullable().optional(),
-  sortOrder: z.number().nullable().optional(),
-  star: z.boolean().nullable().optional(),
-});
+// Shared TaskCard contract (D2 wiring). The backend WorkbenchTaskSummary only
+// emits the four fields above (id/shortTitle/status/version); the rest are
+// optional so the page can adapt the summary into a TaskLike without a
+// backend change.
+const taskSummarySchema = taskViewSchema
+  .pick({
+    id: true,
+    shortTitle: true,
+    status: true,
+    version: true,
+    title: true,
+    sourceType: true,
+    trackId: true,
+    itemOrdinal: true,
+    durationMinutes: true,
+    locked: true,
+    carriedOver: true,
+    scheduledDate: true,
+    carriedFromDate: true,
+    parentTaskId: true,
+    linkedParentTaskId: true,
+    priority: true,
+    sortOrder: true,
+    star: true,
+  })
+  .extend({
+    title: z.string().nullable().optional(),
+    sourceType: z.string().nullable().optional(),
+    trackId: z.string().uuid().nullable().optional(),
+    itemOrdinal: z.number().nullable().optional(),
+    durationMinutes: z.number().nullable().optional(),
+    locked: z.boolean().nullable().optional(),
+    scheduledDate: z.string().nullable().optional(),
+    ...taskCardContractFields,
+  });
 
 const dayCellSchema = z.object({
   date: z.string(),
@@ -62,9 +80,7 @@ export function getWorkbench(
   from?: string,
   to?: string,
 ): Promise<WorkbenchResponse> {
-  const params = new URLSearchParams();
-  if (from) params.set("from", from);
-  if (to) params.set("to", to);
-  const suffix = params.size === 0 ? "" : `?${params.toString()}`;
-  return getJson(`/workbench${suffix}`, workbenchResponseSchema);
+  return getDataAdapter()
+    .getWorkbench(from, to)
+    .then((value) => workbenchResponseSchema.parse(value));
 }

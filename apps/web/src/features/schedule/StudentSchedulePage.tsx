@@ -1,12 +1,15 @@
-import { ArrowLeftOutlined, LockOutlined } from "@ant-design/icons";
+import {
+  ArrowLeftOutlined,
+  LockOutlined,
+  PlusOutlined,
+} from "@ant-design/icons";
 import {
   Alert,
   App,
   Button,
   Card,
   Empty,
-  Input,
-  Modal,
+  Popover,
   Skeleton,
   Space,
   Spin,
@@ -35,10 +38,16 @@ import {
 } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ApiError } from "../../lib/api/http";
+import { ApiError } from "../../lib/api/ApiError";
 import { useBusinessDate } from "../foundation/useBusinessDate";
 import { TaskCard } from "../tasks/TaskCard";
 import {
+  TaskDetailDrawer,
+  type TaskDetailTarget,
+} from "../tasks/TaskDetailDrawer";
+import { invalidateTaskViews, taskActions } from "../tasks/taskActions";
+import {
+  createNextSeriesTask,
   createSubTask,
   deleteTask,
   duplicateTask,
@@ -47,14 +56,17 @@ import {
   type Priority,
   type TaskLike,
 } from "../tasks/taskApi";
-import { completeTask, reopenTask } from "../today/todayApi";
+import { parseSeriesTitle } from "../../domain/task/seriesTitle";
+import { InlineTaskComposer } from "../today/InlineTaskComposer";
+import { convertTaskToLongTask } from "../longtasks/longTaskApi";
 import {
   getSchedule,
-  rescheduleTask,
   type ScheduleDay,
   type ScheduleResponse,
   type ScheduleTask,
 } from "./scheduleApi";
+import { MonthView } from "../../vendor/flowclass/calendar/MonthView";
+import { canMoveCalendarEvent } from "../../vendor/flowclass/calendar/types";
 
 const dayNames = ["日", "一", "二", "三", "四", "五", "六"];
 // Monday-first header order for the week/month calendar grids. The backend
@@ -76,8 +88,9 @@ function gridColumnIndex(date: string): number {
  * Adapts a ScheduleTask into the shared TaskCard TaskLike contract. D2 fields
  * (parentTaskId / linkedParentTaskId / priority / sortOrder / star) are now
  * surfaced on the schedule schema, so they pass through instead of being
- * hardcoded to defaults. When the backend omits them they stay undefined and
- * the card degrades gracefully.
+ * hardcoded to defaults. carriedFromDate (DLY-022) feeds the 顺延 tooltip.
+ * When the adapter omits an optional field it stays undefined/null and the
+ * card degrades gracefully.
  */
 function toTaskLike(task: ScheduleTask): TaskLike {
   return {
@@ -89,6 +102,8 @@ function toTaskLike(task: ScheduleTask): TaskLike {
     itemOrdinal: task.itemOrdinal,
     durationMinutes: task.durationMinutes,
     locked: task.locked,
+    carriedOver: task.carriedOver ?? false,
+    carriedFromDate: task.carriedFromDate ?? null,
     version: task.version,
     parentTaskId: task.parentTaskId ?? null,
     linkedParentTaskId: task.linkedParentTaskId ?? null,
@@ -110,19 +125,6 @@ interface DragData {
 interface DropData {
   date: string;
   available: boolean;
-}
-
-interface ConflictInfo {
-  message: string;
-  currentVersion: number | null;
-  // AC-013: preserve the user's pending reschedule request so they can
-  // retry ("overwrite") against the server's latest version or cancel.
-  pendingReschedule: {
-    taskId: string;
-    version: number;
-    targetDate: string;
-    overrideReason?: string;
-  } | null;
 }
 
 // AC-008: capture enough context after a drag/move to offer a one-click
@@ -162,17 +164,20 @@ export function StudentSchedulePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { message } = App.useApp();
-  // AC-001: 业务日期由服务端按组织时区 (Asia/Shanghai) 计算,
-  // 优先使用后端 /context 返回的 businessDate 作为初始日期;
-  // 仅在 /context 尚未就绪时回退到浏览器本地日期。
+  // All schedule views use the same local machine calendar date.
   const today = useBusinessDate();
   const [view, setView] = useState<"day" | "week" | "month">("week");
   const [selectedDate, setSelectedDate] = useState(today);
   const [activeDrag, setActiveDrag] = useState<DragData | null>(null);
-  const [conflict, setConflict] = useState<ConflictInfo | null>(null);
   // AC-008: keep the last undo context around so the "撤销本次拖拽" toast
   // button can reschedule the task back to its original date.
   const undoRef = useRef<UndoContext | null>(null);
+  // MAJOR-5: read-only detail drawer. ScheduleTask rows are day-scoped (no
+  // scheduledDate column of their own), so DraggableTaskItem injects the
+  // cell's date before the target reaches this state.
+  const [detailTarget, setDetailTarget] = useState<TaskDetailTarget | null>(
+    null,
+  );
 
   const scheduleQuery = useQuery({
     queryKey: ["schedule", studentId, view, selectedDate],
@@ -184,7 +189,7 @@ export function StudentSchedulePage() {
 
   const completeMutation = useMutation({
     mutationFn: (params: { taskId: string; version: number }) =>
-      completeTask(params.taskId, params.version, crypto.randomUUID()),
+      taskActions.complete(params.taskId, params.version, crypto.randomUUID()),
     onMutate: async (params) => {
       // Optimistic update: flip the task to COMPLETED in every cached
       // schedule window immediately so the checkbox reflects the click
@@ -205,7 +210,11 @@ export function StudentSchedulePage() {
                   ...day,
                   tasks: day.tasks.map((task) =>
                     task.id === params.taskId
-                      ? { ...task, status: "COMPLETED" }
+                      ? {
+                          ...task,
+                          status: "COMPLETED",
+                          version: task.version + 1,
+                        }
                       : task,
                   ),
                 })),
@@ -223,15 +232,13 @@ export function StudentSchedulePage() {
       }
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["schedule", studentId],
-      });
+      void invalidateTaskViews(queryClient);
     },
   });
 
   const reopenMutation = useMutation({
     mutationFn: (params: { taskId: string; version: number }) =>
-      reopenTask(params.taskId, params.version, crypto.randomUUID()),
+      taskActions.reopen(params.taskId, params.version, crypto.randomUUID()),
     onMutate: async (params) => {
       // Optimistic update: flip the task back to PENDING immediately so
       // the checkbox unchecks without waiting for the server.
@@ -251,7 +258,11 @@ export function StudentSchedulePage() {
                   ...day,
                   tasks: day.tasks.map((task) =>
                     task.id === params.taskId
-                      ? { ...task, status: "PENDING" }
+                      ? {
+                          ...task,
+                          status: "PENDING",
+                          version: task.version + 1,
+                        }
                       : task,
                   ),
                 })),
@@ -268,15 +279,38 @@ export function StudentSchedulePage() {
       }
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["schedule", studentId],
-      });
+      void invalidateTaskViews(queryClient);
+    },
+  });
+
+  const carryForwardMutation = useMutation({
+    mutationFn: (task: TaskLike) =>
+      taskActions.carryForward(task.id, undefined, "MANUAL_CARRYOVER"),
+    onSuccess: (result) => {
+      if (result.status === "BLOCKED") {
+        void message.warning(result.reason ?? "90 天内没有可用学习日");
+        return;
+      }
+      void message.success(
+        result.targetDate
+          ? `已顺延至 ${result.targetDate}`
+          : "任务无需重复顺延",
+      );
+    },
+    onError: (error) => {
+      void message.error(
+        error instanceof ApiError
+          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
+          : "顺延任务失败，请稍后重试",
+      );
+    },
+    onSettled: () => {
+      void invalidateTaskViews(queryClient);
     },
   });
 
   // D2: shared TaskCard callbacks. These mutations invalidate the schedule
-  // windows on settle so the list reflects the latest server state. 409
-  // conflicts surface through the same conflict banner as reschedule.
+  // windows on settle so the list reflects the latest local database state.
   const deleteTaskMutation = useMutation({
     mutationFn: (task: TaskLike) => deleteTask(task.id, task.version),
     onSuccess: () => {
@@ -290,7 +324,7 @@ export function StudentSchedulePage() {
       );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["schedule", studentId] });
+      void invalidateTaskViews(queryClient);
     },
   });
 
@@ -308,7 +342,51 @@ export function StudentSchedulePage() {
       );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["schedule", studentId] });
+      void invalidateTaskViews(queryClient);
+    },
+  });
+
+  // 系列推进（用户反馈）：day1 打勾后点 → 箭头，下一天出现 day2；序号按
+  // 同前缀最大值 +1 接续，当天已有 day1~day3 时逐行点箭头得到 day4~day6。
+  const createNextSeriesMutation = useMutation({
+    mutationFn: (task: TaskLike) =>
+      createNextSeriesTask(task.id, { expectedVersion: task.version }),
+    onSuccess: (created) => {
+      void message.success(
+        `已生成「${created.titleSnapshot}」，排在 ${created.scheduledDate ?? "下一天"}`,
+      );
+    },
+    onError: (error) => {
+      void message.error(
+        error instanceof ApiError
+          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
+          : "生成下一项失败，请稍后重试",
+      );
+    },
+    onSettled: () => {
+      void invalidateTaskViews(queryClient);
+    },
+  });
+
+  // 右键“设为长期任务”：普通任务原地升级为长期任务轨道的当前项，完成后续项
+  // 由轨道按标题模板自动接排；历史任务不回填。
+  const convertToLongTaskMutation = useMutation({
+    mutationFn: (task: TaskLike) =>
+      convertTaskToLongTask(task.id, { expectedVersion: task.version }),
+    onSuccess: (result) => {
+      void message.success(
+        `已设为长期任务，当前第 ${result.ordinal} 项，完成后续项将自动接排`,
+      );
+    },
+    onError: (error) => {
+      void message.error(
+        error instanceof ApiError
+          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
+          : "设为长期任务失败，请稍后重试",
+      );
+    },
+    onSettled: () => {
+      void invalidateTaskViews(queryClient);
     },
   });
 
@@ -326,13 +404,17 @@ export function StudentSchedulePage() {
       );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["schedule", studentId] });
+      void invalidateTaskViews(queryClient);
     },
   });
 
   const linkMainTaskMutation = useMutation({
     mutationFn: (params: { task: TaskLike; linkedParentTaskId: string }) =>
-      linkMainTask(params.task.id, params.task.version, params.linkedParentTaskId),
+      linkMainTask(
+        params.task.id,
+        params.task.version,
+        params.linkedParentTaskId,
+      ),
     onSuccess: () => {
       void message.success("已关联主任务");
     },
@@ -344,44 +426,28 @@ export function StudentSchedulePage() {
       );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["schedule", studentId] });
+      void invalidateTaskViews(queryClient);
     },
   });
 
   // Priority toggle. ScheduleTask now carries priority (D2 wiring); the
   // optimistic update only patches the cache for invalidation here — the
-  // refresh brings authoritative values back. 409 conflicts surface through
-  // the same conflict banner as reschedule.
+  // refresh brings authoritative values back from SQLite.
   const updateTaskMutation = useMutation({
-    mutationFn: (params: {
-      task: TaskLike;
-      priority?: Priority;
-    }) =>
+    mutationFn: (params: { task: TaskLike; priority?: Priority }) =>
       updateTask(params.task.id, {
         expectedVersion: params.task.version,
         priority: params.priority,
       }),
     onError: (error) => {
-      if (error instanceof ApiError && error.status === 409) {
-        const currentVersion =
-          typeof error.current.version === "number"
-            ? error.current.version
-            : null;
-        setConflict({
-          message: error.message,
-          currentVersion,
-          pendingReschedule: null,
-        });
-      } else {
-        void message.error(
-          error instanceof ApiError
-            ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-            : "更新任务失败，请稍后重试",
-        );
-      }
+      void message.error(
+        error instanceof ApiError
+          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
+          : "更新任务失败，请稍后重试",
+      );
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["schedule", studentId] });
+      void invalidateTaskViews(queryClient);
     },
   });
 
@@ -390,8 +456,12 @@ export function StudentSchedulePage() {
   // the page just needs to refresh the schedule windows to reflect the new
   // date.
   const handleRescheduleSuccess = () => {
-    void queryClient.invalidateQueries({ queryKey: ["schedule", studentId] });
+    void invalidateTaskViews(queryClient);
   };
+
+  // 日/周/月视图里每个日期格子的"添加任务"入口；创建成功后刷新所有共享
+  // 任务投影（today/workbench/schedule），让新任务立刻出现在对应格子里。
+  const refreshTaskViews = () => invalidateTaskViews(queryClient);
 
   const rescheduleMutation = useMutation({
     mutationFn: (params: {
@@ -400,7 +470,7 @@ export function StudentSchedulePage() {
       targetDate: string;
       overrideReason?: string;
     }) =>
-      rescheduleTask(
+      taskActions.reschedule(
         params.taskId,
         params.version,
         params.targetDate,
@@ -449,32 +519,18 @@ export function StudentSchedulePage() {
       );
       return { snapshots };
     },
-    onError: (error, params, context) => {
+    onError: (error, _params, context) => {
       // Roll back the optimistic move on failure.
       if (context?.snapshots) {
         for (const [key, data] of context.snapshots) {
           queryClient.setQueryData(key, data);
         }
       }
-      if (error instanceof ApiError && error.status === 409) {
-        const currentVersion =
-          typeof error.current.version === "number"
-            ? error.current.version
-            : null;
-        // AC-013: keep the user's pending reschedule request so they can
-        // retry ("overwrite") against the server's latest version or
-        // cancel ("discard").
-        setConflict({
-          message: error.message,
-          currentVersion,
-          pendingReschedule: params,
-        });
-      } else {
-        setConflict(null);
-      }
+      void message.error(
+        error instanceof ApiError ? error.message : "排期更新失败，请稍后重试",
+      );
     },
     onSuccess: async () => {
-      setConflict(null);
       await queryClient.invalidateQueries({
         queryKey: ["schedule", studentId],
       });
@@ -482,9 +538,7 @@ export function StudentSchedulePage() {
     onSettled: () => {
       // Refresh the schedule snapshot so a subsequent "overwrite" retry
       // uses the latest version (AC-013).
-      void queryClient.invalidateQueries({
-        queryKey: ["schedule", studentId],
-      });
+      void invalidateTaskViews(queryClient);
     },
   });
 
@@ -552,35 +606,6 @@ export function StudentSchedulePage() {
     }
   };
 
-  // AC-013: "overwrite with my version" — retry the pending reschedule
-  // using the server's latest version (already reloaded via the 409
-  // invalidation above).
-  const handleOverwrite = () => {
-    if (!conflict?.pendingReschedule) return;
-    const pending = conflict.pendingReschedule;
-    const latestVersion =
-      conflict.currentVersion ?? pending.version;
-    rescheduleMutation.mutate({
-      taskId: pending.taskId,
-      version: latestVersion,
-      targetDate: pending.targetDate,
-      overrideReason: pending.overrideReason,
-    });
-  };
-
-  // AC-013: "discard changes" — drop the pending reschedule and clear the
-  // conflict; the schedule view stays aligned with the server state.
-  const handleDiscard = () => {
-    setConflict(null);
-  };
-
-  const [override, setOverride] = useState<{
-    taskId: string;
-    version: number;
-    targetDate: string;
-    reason: string;
-  } | null>(null);
-
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, {
@@ -593,6 +618,12 @@ export function StudentSchedulePage() {
     if (!data) return [];
     return [...data.days].sort((a, b) => a.date.localeCompare(b.date));
   }, [scheduleQuery.data]);
+
+  // Date-keyed lookup so the month grid shell can resolve each cell in O(1).
+  const dayByDate = useMemo(
+    () => new Map(sortedDays.map((day) => [day.date, day])),
+    [sortedDays],
+  );
 
   const handleDragStart = (event: DragStartEvent): void => {
     const data = event.active.data.current as DragData | undefined;
@@ -608,16 +639,13 @@ export function StudentSchedulePage() {
     const dragData = active.data.current as DragData | undefined;
     const dropData = over.data.current as DropData | undefined;
     if (!dragData || !dropData) return;
-    if (dragData.sourceDate === dropData.date) return;
-    if (!dropData.available) {
-      // Target day is unavailable — prompt for an override reason before
-      // committing the reschedule (PRD AC-007 / BR-009).
-      setOverride({
-        taskId: dragData.taskId,
-        version: dragData.version,
-        targetDate: dropData.date,
-        reason: "",
-      });
+    // RSC-001/INT-CAL-007: one move guard for every date-change entry point.
+    if (
+      !canMoveCalendarEvent(
+        { locked: dragData.locked, scheduledDate: dragData.sourceDate },
+        dropData.date,
+      )
+    ) {
       return;
     }
     const undo: UndoContext = {
@@ -661,7 +689,7 @@ export function StudentSchedulePage() {
           description={
             error instanceof ApiError
               ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-              : "请确认 API 已启动并登录。"
+              : "请检查本地数据文件后重试。"
           }
           action={
             <Button type="link" onClick={() => void scheduleQuery.refetch()}>
@@ -675,11 +703,12 @@ export function StudentSchedulePage() {
 
   const data = scheduleQuery.data;
 
-  const findNextDay = (currentDate: string): string | null => {
-    const idx = sortedDays.findIndex((d) => d.date === currentDate);
-    if (idx === -1 || idx >= sortedDays.length - 1) return null;
-    return sortedDays[idx + 1].date;
-  };
+  // "改期到下一天" is the next calendar day, not the next day that happens to
+  // be loaded in the current window. Deriving it from `sortedDays` made the
+  // action dead on the last cell of every window (and on the single day of the
+  // day view), even though the target date is always well defined.
+  const findNextDay = (currentDate: string): string | null =>
+    nextCalendarDay(currentDate);
 
   return (
     <Spin
@@ -689,6 +718,7 @@ export function StudentSchedulePage() {
         rescheduleMutation.isPending ||
         deleteTaskMutation.isPending ||
         duplicateTaskMutation.isPending ||
+        createNextSeriesMutation.isPending ||
         createSubTaskMutation.isPending ||
         linkMainTaskMutation.isPending ||
         updateTaskMutation.isPending
@@ -707,6 +737,14 @@ export function StudentSchedulePage() {
           </Typography.Title>
           <Typography.Text type="secondary">{data.studentCode}</Typography.Text>
           <Tag>{data.devicePolicy}</Tag>
+          {/* AVL-013: the study-day rules editor lives on the profile page;
+              reach it without leaving the calendar workflow. */}
+          <Button
+            style={{ marginLeft: "auto" }}
+            onClick={() => void navigate(`/students/${studentId}/profile`)}
+          >
+            学习日设置
+          </Button>
         </Space>
 
         <Space>
@@ -726,33 +764,6 @@ export function StudentSchedulePage() {
           />
         </Space>
 
-        {conflict ? (
-          <Alert
-            type="warning"
-            showIcon
-            message="任务已被其他用户修改"
-            description={
-              <>
-                <Typography.Paragraph style={{ marginBottom: 8 }}>
-                  {conflict.currentVersion != null
-                    ? `${conflict.message}（服务器当前版本 v${conflict.currentVersion}）。已为您重新加载最新排期，您的顺延请求仍保留。`
-                    : conflict.message}
-                </Typography.Paragraph>
-                <Space>
-                  <Button
-                    type="primary"
-                    loading={rescheduleMutation.isPending}
-                    onClick={handleOverwrite}
-                  >
-                    用我的版本覆盖
-                  </Button>
-                  <Button onClick={handleDiscard}>放弃修改</Button>
-                </Space>
-              </>
-            }
-          />
-        ) : null}
-
         {data.days.length === 0 ? (
           <Empty description="所选范围内无排期数据" />
         ) : (
@@ -763,15 +774,20 @@ export function StudentSchedulePage() {
             onDragEnd={handleDragEnd}
           >
             {view === "day" ? (
-              // Day view: keep the single full-width vertical stack of day
-              // cards (one card per returned day; the day view returns one
-              // day but we render whatever the backend gives).
-              <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+              // Day view: one full-width card per returned day. The local
+              // adapter narrows the window to exactly the selected day, so
+              // this renders a single card.
+              <Space
+                direction="vertical"
+                size="middle"
+                style={{ width: "100%" }}
+              >
                 {data.days.map((day) => (
                   <DayCard
                     key={day.date}
                     day={day}
                     studentId={studentId as string}
+                    studentName={data.studentName}
                     activeDragLocked={activeDrag?.locked ?? false}
                     onComplete={(task) =>
                       completeMutation.mutate({
@@ -785,6 +801,7 @@ export function StudentSchedulePage() {
                         version: task.version,
                       })
                     }
+                    onCarryForward={(task) => carryForwardMutation.mutate(task)}
                     onMoveNext={(task) => {
                       const nextDate = findNextDay(day.date);
                       if (nextDate) {
@@ -802,7 +819,7 @@ export function StudentSchedulePage() {
                           },
                           {
                             onSuccess: () => {
-                              // AC-008: offer undo for the "顺延到下一天" move.
+                              // AC-008: offer undo for the manual move.
                               showUndoToast(undo);
                             },
                           },
@@ -811,19 +828,24 @@ export function StudentSchedulePage() {
                     }}
                     onDelete={(task) => deleteTaskMutation.mutate(task)}
                     onDuplicate={(task) => duplicateTaskMutation.mutate(task)}
+                    onCreateNext={(task) =>
+                      createNextSeriesMutation.mutate(task)
+                    }
+                    onConvertToLongTask={(task) =>
+                      convertToLongTaskMutation.mutate(task)
+                    }
                     onAddSubTask={(task, title) =>
                       createSubTaskMutation.mutate({ task, title })
                     }
                     onLinkParent={(task, linkedParentTaskId) =>
                       linkMainTaskMutation.mutate({ task, linkedParentTaskId })
                     }
-                    onViewDetail={(task) =>
-                      void message.info(`任务 ${task.id} 详情待实现`)
-                    }
+                    onViewDetail={(task) => setDetailTarget(task)}
                     onSetPriority={(task, next) =>
                       updateTaskMutation.mutate({ task, priority: next })
                     }
                     onRescheduleSuccess={handleRescheduleSuccess}
+                    onAddTask={refreshTaskViews}
                   />
                 ))}
               </Space>
@@ -857,6 +879,7 @@ export function StudentSchedulePage() {
                       key={day.date}
                       day={day}
                       studentId={studentId as string}
+                      studentName={data.studentName}
                       activeDragLocked={activeDrag?.locked ?? false}
                       onComplete={(task) =>
                         completeMutation.mutate({
@@ -869,6 +892,9 @@ export function StudentSchedulePage() {
                           taskId: task.id,
                           version: task.version,
                         })
+                      }
+                      onCarryForward={(task) =>
+                        carryForwardMutation.mutate(task)
                       }
                       onMoveNext={(task, dayDate) => {
                         const nextDate = findNextDay(dayDate);
@@ -895,19 +921,27 @@ export function StudentSchedulePage() {
                       }}
                       onDelete={(task) => deleteTaskMutation.mutate(task)}
                       onDuplicate={(task) => duplicateTaskMutation.mutate(task)}
+                      onCreateNext={(task) =>
+                        createNextSeriesMutation.mutate(task)
+                      }
+                      onConvertToLongTask={(task) =>
+                        convertToLongTaskMutation.mutate(task)
+                      }
                       onAddSubTask={(task, title) =>
                         createSubTaskMutation.mutate({ task, title })
                       }
                       onLinkParent={(task, linkedParentTaskId) =>
-                        linkMainTaskMutation.mutate({ task, linkedParentTaskId })
+                        linkMainTaskMutation.mutate({
+                          task,
+                          linkedParentTaskId,
+                        })
                       }
-                      onViewDetail={(task) =>
-                        void message.info(`任务 ${task.id} 详情待实现`)
-                      }
+                      onViewDetail={(task) => setDetailTarget(task)}
                       onSetPriority={(task, next) =>
                         updateTaskMutation.mutate({ task, priority: next })
                       }
                       onRescheduleSuccess={handleRescheduleSuccess}
+                      onAddTask={refreshTaskViews}
                     />
                   ) : (
                     <div
@@ -923,104 +957,97 @@ export function StudentSchedulePage() {
                 )}
               </div>
             ) : (
-              // Month view: 7-column grid, one row per week (standard month
-              // calendar layout). Each cell is one day; tasks stack
-              // vertically and the cell grows with content. Days outside the
-              // month that belong to the first/last week are rendered as
-              // empty placeholder cells so the grid stays rectangular.
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
-                  gap: 8,
-                }}
-              >
-                {weekHeaderNames.map((name) => (
-                  <div
-                    key={name}
-                    style={{
-                      textAlign: "center",
-                      fontWeight: 600,
-                      padding: "4px 0",
-                      color: "#888",
-                    }}
-                  >
-                    周{name}
-                  </div>
-                ))}
-                {buildMonthGrid(sortedDays, selectedDate).map((day, idx) =>
-                  day ? (
-                    <DayCell
-                      key={day.date}
-                      day={day}
-                      studentId={studentId as string}
-                      activeDragLocked={activeDrag?.locked ?? false}
-                      onComplete={(task) =>
-                        completeMutation.mutate({
-                          taskId: task.id,
-                          version: task.version,
-                        })
-                      }
-                      onReopen={(task) =>
-                        reopenMutation.mutate({
-                          taskId: task.id,
-                          version: task.version,
-                        })
-                      }
-                      onMoveNext={(task, dayDate) => {
-                        const nextDate = findNextDay(dayDate);
-                        if (nextDate) {
-                          const undo: UndoContext = {
+              // Month view: the Monday-first six-week grid comes from the
+              // ported Flowclass MonthView shell (INT-CAL-001/002); each cell
+              // is still WD's DayCell, so the checkbox, context menu, +N
+              // overflow and study-day marking are unchanged.
+              <div className="flowclass-scope">
+                <MonthView
+                  anchorDate={selectedDate}
+                  renderDay={(calendarDay) => {
+                    const day = dayByDate.get(calendarDay.businessDate);
+                    if (!day) {
+                      return (
+                        <div
+                          className="flowcal-day flowcal-day-muted"
+                          aria-hidden="true"
+                        />
+                      );
+                    }
+                    return (
+                      <DayCell
+                        day={day}
+                        muted={!calendarDay.isCurrentMonth}
+                        studentId={studentId as string}
+                        studentName={data.studentName}
+                        activeDragLocked={activeDrag?.locked ?? false}
+                        onComplete={(task) =>
+                          completeMutation.mutate({
                             taskId: task.id,
-                            originalDate: dayDate,
-                            targetDate: nextDate,
-                            title: task.shortTitle ?? task.title,
-                          };
-                          rescheduleMutation.mutate(
-                            {
-                              taskId: task.id,
-                              version: task.version,
-                              targetDate: nextDate,
-                            },
-                            {
-                              onSuccess: () => {
-                                showUndoToast(undo);
-                              },
-                            },
-                          );
+                            version: task.version,
+                          })
                         }
-                      }}
-                      onDelete={(task) => deleteTaskMutation.mutate(task)}
-                      onDuplicate={(task) => duplicateTaskMutation.mutate(task)}
-                      onAddSubTask={(task, title) =>
-                        createSubTaskMutation.mutate({ task, title })
-                      }
-                      onLinkParent={(task, linkedParentTaskId) =>
-                        linkMainTaskMutation.mutate({
-                          task,
-                          linkedParentTaskId,
-                        })
-                      }
-                      onViewDetail={(task) =>
-                        void message.info(`任务 ${task.id} 详情待实现`)
-                      }
-                      onSetPriority={(task, next) =>
-                        updateTaskMutation.mutate({ task, priority: next })
-                      }
-                      onRescheduleSuccess={handleRescheduleSuccess}
-                    />
-                  ) : (
-                    <div
-                      key={`empty-${idx}`}
-                      style={{
-                        minHeight: 96,
-                        border: "1px dashed #d9d9d9",
-                        borderRadius: 8,
-                        background: "#fafafa",
-                      }}
-                    />
-                  ),
-                )}
+                        onReopen={(task) =>
+                          reopenMutation.mutate({
+                            taskId: task.id,
+                            version: task.version,
+                          })
+                        }
+                        onCarryForward={(task) =>
+                          carryForwardMutation.mutate(task)
+                        }
+                        onMoveNext={(task, dayDate) => {
+                          const nextDate = findNextDay(dayDate);
+                          if (nextDate) {
+                            const undo: UndoContext = {
+                              taskId: task.id,
+                              originalDate: dayDate,
+                              targetDate: nextDate,
+                              title: task.shortTitle ?? task.title,
+                            };
+                            rescheduleMutation.mutate(
+                              {
+                                taskId: task.id,
+                                version: task.version,
+                                targetDate: nextDate,
+                              },
+                              {
+                                onSuccess: () => {
+                                  showUndoToast(undo);
+                                },
+                              },
+                            );
+                          }
+                        }}
+                        onDelete={(task) => deleteTaskMutation.mutate(task)}
+                        onDuplicate={(task) =>
+                          duplicateTaskMutation.mutate(task)
+                        }
+                        onCreateNext={(task) =>
+                          createNextSeriesMutation.mutate(task)
+                        }
+                        onConvertToLongTask={(task) =>
+                          convertToLongTaskMutation.mutate(task)
+                        }
+                        onAddSubTask={(task, title) =>
+                          createSubTaskMutation.mutate({ task, title })
+                        }
+                        onLinkParent={(task, linkedParentTaskId) =>
+                          linkMainTaskMutation.mutate({
+                            task,
+                            linkedParentTaskId,
+                          })
+                        }
+                        onViewDetail={(task) => setDetailTarget(task)}
+                        onSetPriority={(task, next) =>
+                          updateTaskMutation.mutate({ task, priority: next })
+                        }
+                        onRescheduleSuccess={handleRescheduleSuccess}
+                        onAddTask={refreshTaskViews}
+                      />
+                    );
+                  }}
+                />
               </div>
             )}
             <DragOverlay dropAnimation={null}>
@@ -1047,71 +1074,11 @@ export function StudentSchedulePage() {
             }
           />
         ) : null}
-
-        <Modal
-          title="目标日不可学习"
-          open={override !== null}
-          okText="override 仍然安排"
-          cancelText="取消"
-          okButtonProps={{ disabled: !override?.reason.trim() }}
-          confirmLoading={rescheduleMutation.isPending}
-          onCancel={() => setOverride(null)}
-          onOk={() => {
-            if (!override || !override.reason.trim()) return;
-            // Capture the task's current (pre-move) day + title as the undo
-            // target so the override reschedule can also be undone (AC-008).
-            const currentTask = data.days
-              .flatMap((d) => d.tasks)
-              .find((t) => t.id === override.taskId);
-            const undo: UndoContext = {
-              taskId: override.taskId,
-              originalDate:
-                data.days.find((d) =>
-                  d.tasks.some((t) => t.id === override.taskId),
-                )?.date ?? "",
-              targetDate: override.targetDate,
-              title: currentTask?.shortTitle ?? currentTask?.title ?? "",
-            };
-            rescheduleMutation.mutate(
-              {
-                taskId: override.taskId,
-                version: override.version,
-                targetDate: override.targetDate,
-                overrideReason: override.reason.trim(),
-              },
-              {
-                onSuccess: () => {
-                  if (undo.originalDate) {
-                    // AC-008: even override reschedules can be undone.
-                    showUndoToast(undo);
-                  }
-                },
-                onSettled: () => setOverride(null),
-              },
-            );
-          }}
-        >
-          <Alert
-            type="warning"
-            showIcon
-            message={`目标日期 ${override?.targetDate ?? ""} 不可学习或与设备条件冲突。`}
-            description="继续安排将记录为 manual override（BR-009）。请填写 override 原因后再提交。"
-            style={{ marginBottom: 12 }}
-          />
-          <Input.TextArea
-            rows={3}
-            autoFocus
-            maxLength={500}
-            placeholder="请输入 override 原因（必填）"
-            value={override?.reason ?? ""}
-            onChange={(e) =>
-              setOverride((prev) =>
-                prev ? { ...prev, reason: e.target.value } : prev,
-              )
-            }
-          />
-        </Modal>
       </Space>
+      <TaskDetailDrawer
+        target={detailTarget}
+        onClose={() => setDetailTarget(null)}
+      />
     </Spin>
   );
 }
@@ -1130,45 +1097,11 @@ function buildWeekGrid(days: ScheduleDay[]): (ScheduleDay | null)[] {
   return cells;
 }
 
-// Build a month grid: full weeks (Mon..Sun) covering the month that contains
-// `selectedDate`. Each returned entry is either a `ScheduleDay` (a day within
-// the month's returned range) or `null` (a day outside the month, e.g. the
-// leading days of the first week or trailing days of the last week, which
-// the backend does not return for the month view). The backend returns the
-// weeks of the month; we map each returned day into its column, then pad the
-// leading/trailing slots of the first/last week so the grid is rectangular.
-function buildMonthGrid(
-  days: ScheduleDay[],
-  selectedDate: string,
-): (ScheduleDay | null)[] {
-  // Index returned days by date for O(1) lookup.
-  const byDate = new Map<string, ScheduleDay>();
-  for (const day of days) byDate.set(day.date, day);
-
-  // Compute the month boundaries from the selected date.
-  const base = new Date(selectedDate);
-  const year = base.getFullYear();
-  const month = base.getMonth();
-
-  // First day of the month, and the Monday that starts the first grid week.
-  const firstOfMonth = new Date(year, month, 1);
-  const firstWeekday = firstOfMonth.getDay(); // Sun=0..Sat=6
-  const leadingBlanks = (firstWeekday + 6) % 7; // Monday-first offset
-
-  // Last day of the month.
-  const lastDate = new Date(year, month + 1, 0).getDate();
-
-  const cells: (ScheduleDay | null)[] = [];
-  // Leading empty cells (days before the 1st that belong to the prior month).
-  for (let i = 0; i < leadingBlanks; i++) cells.push(null);
-  // Days of the month.
-  for (let d = 1; d <= lastDate; d++) {
-    const iso = formatDateKey(year, month, d);
-    cells.push(byDate.get(iso) ?? null);
-  }
-  // Trailing empty cells so the grid is a whole number of weeks (multiple of 7).
-  while (cells.length % 7 !== 0) cells.push(null);
-  return cells;
+/** The calendar day after `date`, in local time, as YYYY-MM-DD. */
+function nextCalendarDay(date: string): string {
+  const next = new Date(date);
+  next.setDate(next.getDate() + 1);
+  return formatDateKey(next.getFullYear(), next.getMonth(), next.getDate());
 }
 
 /** Format a Y/M/D into a YYYY-MM-DD string (local, no timezone shift). */
@@ -1181,35 +1114,45 @@ function formatDateKey(year: number, month: number, day: number): string {
 function DayCard({
   day,
   studentId,
+  studentName,
   activeDragLocked,
   onComplete,
   onReopen,
+  onCarryForward,
   onMoveNext,
   onDelete,
   onDuplicate,
+  onCreateNext,
+  onConvertToLongTask,
   onAddSubTask,
   onLinkParent,
   onViewDetail,
   onSetPriority,
   onRescheduleSuccess,
+  onAddTask,
 }: {
   day: ScheduleDay;
   studentId: string;
+  studentName: string;
   activeDragLocked: boolean;
   onComplete: (task: ScheduleTask) => void;
   onReopen: (task: ScheduleTask) => void;
+  onCarryForward: (task: TaskLike) => void;
   onMoveNext: (task: ScheduleTask) => void;
   onDelete: (task: TaskLike) => void;
   onDuplicate: (task: TaskLike) => void;
+  onCreateNext: (task: TaskLike) => void;
+  onConvertToLongTask?: (task: TaskLike) => void;
   onAddSubTask: (task: TaskLike, title: string) => void;
   onLinkParent: (task: TaskLike, linkedParentTaskId: string) => void;
-  onViewDetail: (task: TaskLike) => void;
+  onViewDetail: (target: TaskDetailTarget) => void;
   onSetPriority: (task: TaskLike, next: Priority) => void;
   onRescheduleSuccess: () => void;
+  onAddTask: () => void | Promise<void>;
 }) {
   const dateObj = new Date(day.date);
   const dayName = dayNames[dateObj.getDay()];
-  // AC-001: "今天"高亮基于服务端业务日期,而非浏览器本地日期。
+  // "今天"高亮基于本机日历日期。
   const isToday = day.date === useBusinessDate();
 
   const { isOver, setNodeRef } = useDroppable({
@@ -1259,6 +1202,11 @@ function DayCard({
               已锁定
             </Tag>
           ) : null}
+          <DayAddTask
+            studentId={studentId}
+            date={day.date}
+            onCreated={onAddTask}
+          />
         </Space>
       }
       style={{
@@ -1276,12 +1224,16 @@ function DayCard({
                 key={task.id}
                 task={task}
                 studentId={studentId}
+                studentName={studentName}
                 sourceDate={day.date}
                 onComplete={onComplete}
                 onReopen={onReopen}
+                onCarryForward={onCarryForward}
                 onMoveNext={onMoveNext}
                 onDelete={onDelete}
                 onDuplicate={onDuplicate}
+                onCreateNext={onCreateNext}
+                onConvertToLongTask={onConvertToLongTask}
                 onAddSubTask={onAddSubTask}
                 onLinkParent={onLinkParent}
                 onViewDetail={onViewDetail}
@@ -1303,36 +1255,49 @@ function DayCard({
 // remains a useDroppable target so drag-and-drop reschedule still works.
 function DayCell({
   day,
+  muted = false,
   studentId,
+  studentName,
   activeDragLocked,
   onComplete,
   onReopen,
+  onCarryForward,
   onMoveNext,
   onDelete,
   onDuplicate,
+  onCreateNext,
+  onConvertToLongTask,
   onAddSubTask,
   onLinkParent,
   onViewDetail,
   onSetPriority,
   onRescheduleSuccess,
+  onAddTask,
 }: {
   day: ScheduleDay;
+  /** Dims cells that belong to the previous/next month in the month grid. */
+  muted?: boolean;
   studentId: string;
+  studentName: string;
   activeDragLocked: boolean;
   onComplete: (task: ScheduleTask) => void;
   onReopen: (task: ScheduleTask) => void;
+  onCarryForward: (task: TaskLike) => void;
   onMoveNext: (task: ScheduleTask, dayDate: string) => void;
   onDelete: (task: TaskLike) => void;
   onDuplicate: (task: TaskLike) => void;
+  onCreateNext: (task: TaskLike) => void;
+  onConvertToLongTask?: (task: TaskLike) => void;
   onAddSubTask: (task: TaskLike, title: string) => void;
   onLinkParent: (task: TaskLike, linkedParentTaskId: string) => void;
-  onViewDetail: (task: TaskLike) => void;
+  onViewDetail: (target: TaskDetailTarget) => void;
   onSetPriority: (task: TaskLike, next: Priority) => void;
   onRescheduleSuccess: () => void;
+  onAddTask: () => void | Promise<void>;
 }) {
   const dateObj = new Date(day.date);
   const dayName = dayNames[dateObj.getDay()];
-  // AC-001: "今天"高亮基于服务端业务日期,而非浏览器本地日期。
+  // "今天"高亮基于本机日历日期。
   const isToday = day.date === useBusinessDate();
 
   const { isOver, setNodeRef } = useDroppable({
@@ -1369,6 +1334,7 @@ function DayCell({
         padding: 8,
         minHeight: 96,
         background: day.available ? "#fff" : "#fafafa",
+        opacity: muted ? 0.55 : undefined,
         display: "flex",
         flexDirection: "column",
         gap: 4,
@@ -1390,26 +1356,45 @@ function DayCell({
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             周{dayName}
           </Typography.Text>
-          {isToday ? <Tag color="blue" style={{ margin: 0 }}>今天</Tag> : null}
+          {isToday ? (
+            <Tag color="blue" style={{ margin: 0 }}>
+              今天
+            </Tag>
+          ) : null}
           {!day.available ? (
             <Tag color="red" style={{ margin: 0 }}>
               不可学习
             </Tag>
           ) : null}
         </Space>
-        {day.available ? (
-          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-            {day.availableMinutes}分
-          </Typography.Text>
-        ) : null}
+        <Space size={4}>
+          {day.available ? (
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+              {day.availableMinutes}分
+            </Typography.Text>
+          ) : null}
+          <DayAddTask
+            studentId={studentId}
+            date={day.date}
+            onCreated={onAddTask}
+          />
+        </Space>
       </div>
       {borderState === "unavailable" ? (
-        <Tag color="orange" icon={<LockOutlined />} style={{ alignSelf: "flex-start" }}>
+        <Tag
+          color="orange"
+          icon={<LockOutlined />}
+          style={{ alignSelf: "flex-start" }}
+        >
           不可学习
         </Tag>
       ) : null}
       {borderState === "locked" ? (
-        <Tag color="red" icon={<LockOutlined />} style={{ alignSelf: "flex-start" }}>
+        <Tag
+          color="red"
+          icon={<LockOutlined />}
+          style={{ alignSelf: "flex-start" }}
+        >
           已锁定
         </Tag>
       ) : null}
@@ -1424,12 +1409,16 @@ function DayCell({
               key={task.id}
               task={task}
               studentId={studentId}
+              studentName={studentName}
               sourceDate={day.date}
               onComplete={onComplete}
               onReopen={onReopen}
+              onCarryForward={onCarryForward}
               onMoveNext={(t) => onMoveNext(t, day.date)}
               onDelete={onDelete}
               onDuplicate={onDuplicate}
+              onCreateNext={onCreateNext}
+              onConvertToLongTask={onConvertToLongTask}
               onAddSubTask={onAddSubTask}
               onLinkParent={onLinkParent}
               onViewDetail={onViewDetail}
@@ -1448,15 +1437,62 @@ function DayCell({
   );
 }
 
+// 每个日期格子共用的"添加任务"入口：小加号按钮点开气泡输入框，回车即
+// 创建当天临时任务（复用 Today 的 InlineTaskComposer，含模板挂载通道），
+// 创建成功后通过 onCreated 刷新共享任务投影并收起气泡。
+function DayAddTask({
+  studentId,
+  date,
+  onCreated,
+}: {
+  studentId: string;
+  date: string;
+  onCreated: () => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      trigger="click"
+      placement="bottomRight"
+      destroyOnHidden
+      content={
+        <div style={{ width: 280 }}>
+          <InlineTaskComposer
+            studentId={studentId}
+            scheduledDate={date}
+            onCreated={async () => {
+              await onCreated();
+              setOpen(false);
+            }}
+          />
+        </div>
+      }
+    >
+      <Button
+        size="small"
+        type="text"
+        icon={<PlusOutlined />}
+        aria-label={`在 ${date} 添加任务`}
+      />
+    </Popover>
+  );
+}
+
 function DraggableTaskItem({
   task,
   studentId,
+  studentName,
   sourceDate,
   onComplete,
   onReopen,
+  onCarryForward,
   onMoveNext,
   onDelete,
   onDuplicate,
+  onCreateNext,
+  onConvertToLongTask,
   onAddSubTask,
   onLinkParent,
   onViewDetail,
@@ -1465,20 +1501,34 @@ function DraggableTaskItem({
 }: {
   task: ScheduleTask;
   studentId: string;
+  studentName: string;
   sourceDate: string;
   onComplete: (task: ScheduleTask) => void;
   onReopen: (task: ScheduleTask) => void;
+  onCarryForward: (task: TaskLike) => void;
   onMoveNext: (task: ScheduleTask) => void;
   onDelete: (task: TaskLike) => void;
   onDuplicate: (task: TaskLike) => void;
+  onCreateNext: (task: TaskLike) => void;
+  onConvertToLongTask?: (task: TaskLike) => void;
   onAddSubTask: (task: TaskLike, title: string) => void;
   onLinkParent: (task: TaskLike, linkedParentTaskId: string) => void;
-  onViewDetail: (task: TaskLike) => void;
+  onViewDetail: (target: TaskDetailTarget) => void;
   onSetPriority: (task: TaskLike, next: Priority) => void;
   onRescheduleSuccess: () => void;
 }) {
+  // ACC-055 / INT-CAL-007: a locked task must not be draggable at all, and a
+  // carried-over source is history — neither can accept a new date. Relying on
+  // the SQL guard alone let the gesture succeed and then surfaced a generic
+  // failure instead of refusing the drag.
+  const immovable = task.locked || task.carriedOver === true;
+  // 系列推进只作用于手工/导入的编号任务；TRACK 任务的“下一项”由轨道在完成
+  // 时自动生成（completeTask 推进 current_ordinal），箭头再做一份会重复。
+  const seriesTask =
+    task.sourceType === "TRACK" ? null : parseSeriesTitle(task.title);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: task.id,
+    disabled: immovable,
     data: {
       taskId: task.id,
       studentId,
@@ -1496,6 +1546,8 @@ function DraggableTaskItem({
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      data-task-drag-id={task.id}
+      data-task-draggable={immovable ? "false" : "true"}
       style={{
         opacity: isDragging ? 0.4 : 1,
       }}
@@ -1513,35 +1565,81 @@ function DraggableTaskItem({
         onReopen={() => {
           onReopen(task);
         }}
+        onCarryForward={onCarryForward}
         onReschedule={() => onRescheduleSuccess()}
         onDelete={(t) => onDelete(t)}
         onDuplicate={(t) => onDuplicate(t)}
+        // TRACK 任务完成时轨道会自动推进生成下一项，这里不再提供“生成下一项”，
+        // 避免同一序号出现两条平行任务。
+        onCreateNext={seriesTask ? (t) => onCreateNext(t) : undefined}
+        onConvertToLongTask={
+          onConvertToLongTask &&
+          taskLike.sourceType === "AD_HOC" &&
+          taskLike.status === "PENDING" &&
+          !taskLike.locked
+            ? (t) => onConvertToLongTask(t)
+            : undefined
+        }
         onAddSubTask={(t, title) => onAddSubTask(t, title)}
         onLinkParent={(t, linkedParentTaskId) =>
           onLinkParent(t, linkedParentTaskId)
         }
-        onViewDetail={(t) => onViewDetail(t)}
+        onViewDetail={() =>
+          // ScheduleTask rows are day-scoped; inject the cell's date so the
+          // drawer can show 计划日期 without a schema change.
+          onViewDetail({
+            task: { ...taskLike, scheduledDate: sourceDate },
+            studentName,
+          })
+        }
         onSetPriority={(t, next) => onSetPriority(t, next)}
         extra={
-          <Button
-            size="small"
-            type="link"
-            aria-label="顺延到下一天"
-            disabled={task.locked}
-            onClick={(e) => {
-              e.stopPropagation();
-              onMoveNext(task);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
+          seriesTask ? (
+            // 系列任务（标题带尾号）的箭头不再“改期自己”，而是生成“序号+1、
+            // 排到下一天”的新任务：day1 打勾后点 → 即得明天的 day2。改期仍
+            // 可用拖拽或右键菜单。无尾号的任务保持原来的改期到下一天。
+            <Button
+              size="small"
+              type="link"
+              aria-label="生成下一项"
+              title="生成下一项并排到下一天，序号自动接续"
+              disabled={task.locked}
+              onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                onCreateNext(taskLike);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onCreateNext(taskLike);
+                }
+              }}
+            >
+              →
+            </Button>
+          ) : (
+            <Button
+              size="small"
+              type="link"
+              aria-label="改期到下一天"
+              disabled={task.locked}
+              onClick={(e) => {
+                e.stopPropagation();
                 onMoveNext(task);
-              }
-            }}
-          >
-            →
-          </Button>
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onMoveNext(task);
+                }
+              }}
+            >
+              →
+            </Button>
+          )
         }
       />
     </div>

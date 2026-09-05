@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getJson, postJson, putVoid } from "../../lib/api/http";
+import { getDataAdapter } from "../../data/runtime";
 
 const templateSchema = z.object({
   id: z.string().uuid(),
@@ -26,6 +26,7 @@ const templatePageSchema = z.object({
   total: z.number(),
   hasNext: z.boolean(),
 });
+export type TemplatePage = z.infer<typeof templatePageSchema>;
 
 const templateVersionSchema = z.object({
   id: z.string().uuid(),
@@ -99,22 +100,40 @@ export type TemplateDetail = z.infer<typeof templateDetailSchema>;
 export type TemplateUsage = z.infer<typeof templateUsageSchema>;
 export type TemplateItemUsage = z.infer<typeof templateItemUsageSchema>;
 
-export function listTemplates(query?: string) {
-  const params = new URLSearchParams();
-  if (query?.trim()) params.set("query", query.trim());
-  const suffix = params.size === 0 ? "" : `?${params.toString()}`;
-  return getJson(`/templates${suffix}`, templatePageSchema);
+export function listTemplates(query?: string): Promise<TemplatePage> {
+  return getDataAdapter()
+    .listTemplates(query)
+    .then((value) => templatePageSchema.parse(value));
+}
+
+export function createTemplate(input: {
+  /** 选填：留空时本地适配器静默生成 T001 式编码（用户反馈表单必填项过多）。 */
+  templateCode?: string | null;
+  name: string;
+  shortName?: string | null;
+  /** 选填：留空时落 OTHER 兜底。 */
+  subjectCode?: string | null;
+  categoryCode?: string | null;
+  unitLabel: string;
+  defaultDurationMinutes?: number | null;
+  defaultRequiresDevice: boolean;
+  description?: string | null;
+}): Promise<TaskTemplate> {
+  return getDataAdapter()
+    .createTemplate(input)
+    .then((value) => templateSchema.parse(value));
 }
 
 export function getTemplateDetail(templateId: string): Promise<TemplateDetail> {
-  return getJson(`/templates/${templateId}`, templateDetailSchema);
+  return getDataAdapter()
+    .getTemplateDetail(templateId)
+    .then((value) => templateDetailSchema.parse(value));
 }
 
 export function listVersionItems(versionId: string): Promise<TemplateItem[]> {
-  return getJson(
-    `/template-versions/${versionId}/items`,
-    z.array(templateItemSchema),
-  );
+  return getDataAdapter()
+    .listVersionItems(versionId)
+    .then((value) => z.array(templateItemSchema).parse(value));
 }
 
 export function replaceVersionItems(
@@ -134,33 +153,31 @@ export function replaceVersionItems(
     changeNote: string | null;
   },
 ): Promise<void> {
-  return putVoid(`/template-versions/${versionId}/items`, input);
+  return getDataAdapter().replaceVersionItems(versionId, input);
 }
 
 export function publishVersion(versionId: string): Promise<TaskTemplate> {
-  return postJson(
-    `/template-versions/${versionId}/publish`,
-    templateSchema,
-    {},
-  );
+  return getDataAdapter()
+    .publishVersion(versionId)
+    .then((value) => templateSchema.parse(value));
 }
 
 export function createTemplateDraft(templateId: string): Promise<TaskTemplate> {
-  return postJson(`/templates/${templateId}/drafts`, templateSchema, {});
+  return getDataAdapter()
+    .createTemplateDraft(templateId)
+    .then((value) => templateSchema.parse(value));
 }
 
 export function getTemplateUsage(templateId: string): Promise<TemplateUsage[]> {
-  return getJson(
-    `/templates/${templateId}/usage`,
-    z.array(templateUsageSchema),
-  );
+  return getDataAdapter()
+    .getTemplateUsage(templateId)
+    .then((value) => z.array(templateUsageSchema).parse(value));
 }
 
 export function getTemplateItemUsage(
   itemId: string,
 ): Promise<TemplateItemUsage[]> {
-  return getJson(
-    `/template-items/${itemId}/usage`,
-    z.array(templateItemUsageSchema),
-  );
+  return getDataAdapter()
+    .getTemplateItemUsage(itemId)
+    .then((value) => z.array(templateItemUsageSchema).parse(value));
 }

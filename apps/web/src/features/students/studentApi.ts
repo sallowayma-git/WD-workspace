@@ -1,15 +1,12 @@
 import { z } from "zod";
-import { getJson, patchJson, postJson } from "../../lib/api/http";
+import { getDataAdapter } from "../../data/runtime";
 
 const studentTagSchema = z.object({
   code: z.string(),
   name: z.string(),
 });
 
-// FR-PROFILE-006: read model for student_subject_preference. The backend stores
-// targetRatio as BigDecimal (0-100), priority as int (1-5). Both are parsed as
-// numbers here — JSON has no native BigDecimal and the API always sends plain
-// numbers for these columns.
+// Subject preferences use JSON-compatible numbers at the local adapter boundary.
 const subjectPreferenceSchema = z.object({
   id: z.string().uuid(),
   subjectCode: z.string(),
@@ -63,14 +60,15 @@ export type SubjectPreferenceInput = z.infer<
 export type StudentPage = z.infer<typeof studentPageSchema>;
 
 export function listStudents(query?: string): Promise<StudentPage> {
-  const params = new URLSearchParams();
-  if (query?.trim()) params.set("query", query.trim());
-  const suffix = params.size === 0 ? "" : `?${params.toString()}`;
-  return getJson(`/students${suffix}`, studentPageSchema);
+  return getDataAdapter()
+    .listStudents(query)
+    .then((value) => studentPageSchema.parse(value));
 }
 
 export function getStudent(studentId: string): Promise<Student> {
-  return getJson(`/students/${studentId}`, studentSchema);
+  return getDataAdapter()
+    .getStudent(studentId)
+    .then((value) => studentSchema.parse(value));
 }
 
 export function updateStudent(
@@ -89,15 +87,27 @@ export function updateStudent(
     expectedVersion: number;
   },
 ): Promise<Student> {
-  return patchJson(`/students/${studentId}`, studentSchema, input);
+  return getDataAdapter()
+    .updateStudent(studentId, input)
+    .then((value) => studentSchema.parse(value));
 }
 
 export function createStudent(input: {
-  studentCode: string;
+  /** 选填：留空时由本地数据层按 S001、S002… 自动生成。 */
+  studentCode?: string;
   name: string;
   defaultDevicePolicy: "ALLOWED" | "NOT_ALLOWED" | "CONFIRM";
   classType?: string;
   subjectPreferences?: SubjectPreferenceInput[];
 }): Promise<Student> {
-  return postJson("/students", studentSchema, input);
+  return getDataAdapter()
+    .createStudent(input)
+    .then((value) => studentSchema.parse(value));
+}
+
+/** 硬删除学生及其常规周、排期、任务、轨道与生词记录，本地数据不可恢复。 */
+export function deleteStudent(studentId: string): Promise<void> {
+  return getDataAdapter()
+    .deleteStudent(studentId)
+    .then(() => undefined);
 }

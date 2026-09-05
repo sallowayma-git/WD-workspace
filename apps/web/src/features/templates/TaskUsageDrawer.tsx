@@ -297,8 +297,9 @@ function ItemUsageGroupedTable({
   rows: TemplateItemUsage[];
   columns: NonNullable<TableProps<TemplateItemUsage>["columns"]>;
 }) {
-  const [activeBucket, setActiveBucket] =
-    useState<ItemUsageBucket | "ALL">("ALL");
+  const [activeBucket, setActiveBucket] = useState<ItemUsageBucket | "ALL">(
+    "ALL",
+  );
 
   const counts = useMemo(() => {
     const init: Record<ItemUsageBucket, number> = {
@@ -353,9 +354,7 @@ function ItemUsageGroupedTable({
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Tabs
         activeKey={activeBucket}
-        onChange={(key) =>
-          setActiveBucket(key as ItemUsageBucket | "ALL")
-        }
+        onChange={(key) => setActiveBucket(key as ItemUsageBucket | "ALL")}
         items={tabItems}
         size="small"
       />

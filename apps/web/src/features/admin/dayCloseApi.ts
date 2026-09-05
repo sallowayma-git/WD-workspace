@@ -1,13 +1,12 @@
 import { z } from "zod";
-import { postJson } from "../../lib/api/http";
+import { getDataAdapter } from "../../data/runtime";
 
-// AC-006 / SDD §9.7: client for the organization day-close manual trigger.
-// Mirrors com.wonderedu.assistant.execution.api.DayCloseViews.DayCloseRunSummary.
-// IDs are UUIDs over the wire; instants are ISO-8601 strings; businessDate is
-// an ISO-8601 date (yyyy-MM-dd). outcome/status are free-form strings so the
-// schema stays resilient to future enum additions without breaking parsing.
+// UUIDs and dates remain plain strings at the local data-adapter boundary.
 
 const dayCloseItemResultSchema = z.object({
+  studentId: z.string().uuid().nullable().optional(),
+  studentName: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
   sourceTaskId: z.string().uuid().nullable(),
   targetTaskId: z.string().uuid().nullable(),
   targetDate: z.string().nullable(),
@@ -17,7 +16,6 @@ const dayCloseItemResultSchema = z.object({
 
 export const dayCloseRunSummarySchema = z.object({
   runId: z.string().uuid(),
-  organizationId: z.string().uuid(),
   businessDate: z.string(),
   startedAt: z.string(),
   finishedAt: z.string().nullable(),
@@ -34,17 +32,11 @@ export const dayCloseRunSummarySchema = z.object({
 export type DayCloseItemResult = z.infer<typeof dayCloseItemResultSchema>;
 export type DayCloseRunSummary = z.infer<typeof dayCloseRunSummarySchema>;
 
-/**
- * Manually trigger the organization day-close job via
- * POST /api/v1/admin/day-close. @PreAuthorize on the backend restricts
- * invocation to the ADMIN role; a 403 surfaces to the caller as an ApiError.
- *
- * @param businessDate ISO-8601 date string (yyyy-MM-dd) for the day-close run.
- */
+/** Runs local day-close for an ISO-8601 calendar date. */
 export function triggerDayClose(
   businessDate: string,
 ): Promise<DayCloseRunSummary> {
-  return postJson("/admin/day-close", dayCloseRunSummarySchema, {
-    businessDate,
-  });
+  return getDataAdapter()
+    .triggerDayClose(businessDate)
+    .then((value) => dayCloseRunSummarySchema.parse(value));
 }

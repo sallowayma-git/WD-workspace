@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getJson, patchJson, postJson } from "../../lib/api/http";
+import { getDataAdapter } from "../../data/runtime";
 
 const entrySchema = z.object({
   id: z.string().uuid(),
@@ -49,47 +49,42 @@ export function listVocabulary(
   to?: string,
   subject?: string,
 ): Promise<VocabularyListResponse> {
-  const params = new URLSearchParams();
-  if (from) params.set("from", from);
-  if (to) params.set("to", to);
-  if (subject) params.set("subject", subject);
-  const suffix = params.size === 0 ? "" : `?${params.toString()}`;
-  return getJson(
-    `/students/${studentId}/vocabulary${suffix}`,
-    listResponseSchema,
-  );
+  return getDataAdapter()
+    .listVocabulary(studentId, { from, to, subject })
+    .then((value) => listResponseSchema.parse(value));
 }
 
 export function previewVocabularyBatch(
   studentId: string,
   rawText: string,
 ): Promise<PreviewResponse> {
-  return postJson(
-    `/students/${studentId}/vocabulary/batches:preview`,
-    previewResponseSchema,
-    { rawText, sourceType: "MANUAL", subjectCode: null, sourceLabel: null },
-  );
+  return getDataAdapter()
+    .previewVocabularyBatch(studentId, {
+      rawText,
+      sourceType: "MANUAL",
+      subjectCode: null,
+      sourceLabel: null,
+    })
+    .then((value) => previewResponseSchema.parse(value));
 }
 
 export function saveVocabularyBatch(
   studentId: string,
   input: { rawText: string; terms: string[] },
 ): Promise<string> {
-  return postJson(`/students/${studentId}/vocabulary/batches`, z.string(), {
-    rawText: input.rawText,
-    sourceType: "MANUAL",
-    subjectCode: null,
-    sourceLabel: null,
-    occurredDate: null,
-    terms: input.terms,
-  });
+  return getDataAdapter()
+    .saveVocabularyBatch(studentId, {
+      rawText: input.rawText,
+      sourceType: "MANUAL",
+      subjectCode: null,
+      sourceLabel: null,
+      occurredDate: null,
+      terms: input.terms,
+    })
+    .then((value) => z.string().parse(value));
 }
 
-/**
- * PATCH /api/v1/vocabulary/entries/{entryId} — SDD §11.8 修改状态/备注.
- * Pass undefined for a field to leave it unchanged. `expectedVersion` carries the
- * optimistic-lock token (BR-013 / AC-013).
- */
+/** Updates status or notes while preserving the local optimistic-lock token. */
 export function updateVocabularyEntry(
   entryId: string,
   input: {
@@ -98,9 +93,11 @@ export function updateVocabularyEntry(
     expectedVersion: number;
   },
 ): Promise<VocabularyEntry> {
-  return patchJson(`/vocabulary/entries/${entryId}`, entrySchema, {
-    status: input.status ?? null,
-    note: input.note ?? null,
-    expectedVersion: input.expectedVersion,
-  });
+  return getDataAdapter()
+    .updateVocabularyEntry(entryId, {
+      status: input.status ?? null,
+      note: input.note ?? null,
+      expectedVersion: input.expectedVersion,
+    })
+    .then((value) => entrySchema.parse(value));
 }

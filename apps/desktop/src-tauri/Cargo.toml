@@ -1,7 +1,7 @@
 [package]
 name = "assistant_desktop"
 version = "0.1.0"
-description = "薄 Tauri 桌面壳；业务规则由助教工作台 API 提供"
+description = "助教工作台本地桌面运行时（Tauri + SQLite）"
 authors = ["Wonder Education"]
 license = "Apache-2.0"
 repository = ""
@@ -23,3 +23,5 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "=2.11.5", features = [] }
 tauri-plugin-log = "2"
+tauri-plugin-sql = { version = "=2.4.0", features = ["sqlite"] }
+sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }

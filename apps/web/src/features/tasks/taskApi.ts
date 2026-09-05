@@ -1,43 +1,14 @@
 import { z } from "zod";
-import { deleteVoid, patchJson, postJson, postVoid } from "../../lib/api/http";
+import { getDataAdapter } from "../../data/runtime";
+import { taskViewSchema } from "./taskViewSchema";
 
-/**
- * TaskInstanceView — the backend record returned by /tasks endpoints.
- * Mirrors com.wonderedu.assistant.planning.api.TaskInstanceView.
- */
-export const taskSchema = z.object({
-  id: z.string().uuid(),
-  studentId: z.string().uuid().nullable(),
-  sourceType: z.string(),
-  trackId: z.string().uuid().nullable(),
-  templateVersionId: z.string().uuid().nullable(),
-  templateItemId: z.string().uuid().nullable(),
-  itemOrdinal: z.number().nullable(),
-  scheduledDate: z.string().nullable(),
-  originalScheduledDate: z.string().nullable(),
-  status: z.string(),
-  titleSnapshot: z.string().nullable(),
-  shortTitleSnapshot: z.string().nullable(),
-  durationMinutesSnapshot: z.number().nullable(),
-  requiresDeviceSnapshot: z.boolean().nullable(),
-  scheduleOrigin: z.string().nullable(),
-  manualOverride: z.boolean().nullable(),
-  overrideReason: z.string().nullable(),
-  locked: z.boolean(),
-  note: z.string().nullable(),
-  carriedFromInstanceId: z.string().uuid().nullable(),
-  carriedToInstanceId: z.string().uuid().nullable(),
-  completedAt: z.string().nullable(),
-  completedBy: z.string().uuid().nullable(),
-  cancelledAt: z.string().nullable(),
-  cancelledBy: z.string().uuid().nullable(),
-  parentTaskId: z.string().uuid().nullable(),
-  linkedParentTaskId: z.string().uuid().nullable(),
-  priority: z.string().nullable(),
-  sortOrder: z.number().nullable(),
-  star: z.boolean().nullable(),
-  version: z.number(),
-  updatedAt: z.string().nullable(),
+/** Shared local TaskInstance view used by all desktop projections. */
+export const taskSchema = taskViewSchema.omit({
+  // Drop the flattened summary aliases — row views read the *Snapshot columns.
+  title: true,
+  shortTitle: true,
+  durationMinutes: true,
+  carriedOver: true,
 });
 
 export type Task = z.infer<typeof taskSchema>;
@@ -53,7 +24,7 @@ export function isPriority(value: unknown): value is Priority {
   );
 }
 
-/** Sortable/usable subset kept by the lighter TodayApi/ScheduleApi views. */
+/** Sortable subset shared by the Today and Schedule views. */
 export type TaskLike = {
   id: string;
   title: string;
@@ -64,6 +35,8 @@ export type TaskLike = {
   durationMinutes?: number | null;
   locked: boolean;
   carriedOver?: boolean;
+  /** DLY-022: original date the task was carried from; drives the 顺延 tooltip. */
+  carriedFromDate?: string | null;
   scheduledDate?: string | null;
   version: number;
   parentTaskId?: string | null;
@@ -85,15 +58,20 @@ export interface UpdateTaskInput {
   expectedVersion: number;
 }
 
-export function updateTask(taskId: string, input: UpdateTaskInput): Promise<Task> {
-  return patchJson(`/tasks/${taskId}`, taskSchema, {
-    taskId,
-    title: input.title ?? null,
-    note: input.note ?? null,
-    priority: input.priority ?? null,
-    star: input.star ?? null,
-    expectedVersion: input.expectedVersion,
-  });
+export function updateTask(
+  taskId: string,
+  input: UpdateTaskInput,
+): Promise<Task> {
+  return getDataAdapter()
+    .updateTask(taskId, {
+      taskId,
+      title: input.title ?? null,
+      note: input.note ?? null,
+      priority: input.priority ?? null,
+      star: input.star ?? null,
+      expectedVersion: input.expectedVersion,
+    })
+    .then((value) => taskSchema.parse(value));
 }
 
 // ---------------------------------------------------------------------------
@@ -113,11 +91,29 @@ export function duplicateTask(
   taskId: string,
   input: DuplicateTaskInput,
 ): Promise<void> {
-  return postVoid(`/tasks/${taskId}/duplicate`, {
+  return getDataAdapter().duplicateTask(taskId, {
     taskId,
     expectedVersion: input.expectedVersion,
     targetDate: input.targetDate ?? null,
   });
+}
+
+// ---------------------------------------------------------------------------
+// 系列下一项 — “一天一句长难句day1”打勾后点箭头，生成 day2 并排到下一天。
+// 序号取同一学生同前缀标题的最大值 +1（当天已有 day1~day3 时得到 day4）；
+// 标题没有尾部数字时退化为复制到下一天。返回新任务的完整视图供 toast 展示。
+// ---------------------------------------------------------------------------
+
+export function createNextSeriesTask(
+  taskId: string,
+  input: { expectedVersion?: number },
+): Promise<Task> {
+  return getDataAdapter()
+    .createNextSeriesTask(taskId, {
+      taskId,
+      expectedVersion: input.expectedVersion ?? null,
+    })
+    .then((value) => taskSchema.parse(value));
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +132,7 @@ export function createSubTask(
   parentTaskId: string,
   input: CreateSubTaskInput,
 ): Promise<void> {
-  return postVoid(`/tasks/${parentTaskId}/subtasks`, {
+  return getDataAdapter().createSubTask(parentTaskId, {
     taskId: parentTaskId,
     title: input.title,
     scheduledDate: input.scheduledDate ?? null,
@@ -154,24 +150,22 @@ export function linkMainTask(
   expectedVersion: number,
   linkedParentTaskId: string,
 ): Promise<Task> {
-  return postJson(`/tasks/${taskId}/link`, taskSchema, {
-    taskId,
-    expectedVersion,
-    linkedParentTaskId,
-  });
+  return getDataAdapter()
+    .linkMainTask(taskId, { taskId, expectedVersion, linkedParentTaskId })
+    .then((value) => taskSchema.parse(value));
 }
 
 // ---------------------------------------------------------------------------
-// Physical delete — AD_HOC/IMPORT tasks only (backend enforces).
-// Backend DeleteTask record carries {taskId, expectedVersion}; backend returns
-// 204 No Content on success.
+// Physical delete — active tasks only. Local SQLite permits a PENDING carry
+// target to be removed, while history rows (CARRIED_OVER/CANCELLED) are kept.
+// The caller must provide the current {taskId, expectedVersion}.
 // ---------------------------------------------------------------------------
 
 export function deleteTask(
   taskId: string,
   expectedVersion: number,
 ): Promise<void> {
-  return deleteVoid(`/tasks/${taskId}`, { taskId, expectedVersion });
+  return getDataAdapter().deleteTask(taskId, { taskId, expectedVersion });
 }
 
 // ---------------------------------------------------------------------------
@@ -184,13 +178,7 @@ export function reorderTask(
   expectedVersion: number,
   newSortOrder: number,
 ): Promise<Task> {
-  return postJson(`/tasks/${taskId}/reorder`, taskSchema, {
-    taskId,
-    expectedVersion,
-    newSortOrder,
-  });
+  return getDataAdapter()
+    .reorderTask(taskId, { taskId, expectedVersion, newSortOrder })
+    .then((value) => taskSchema.parse(value));
 }
-
-// Re-export the void POST helper so callers building ad-hoc task mutations
-// (e.g. reschedule override flows) have a consistent import surface.
-export { postVoid };

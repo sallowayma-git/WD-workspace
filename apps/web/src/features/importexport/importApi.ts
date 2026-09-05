@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { getJson, postJson } from "../../lib/api/http";
-import { getAccessToken } from "../auth/authStore";
+import { getDataAdapter } from "../../data/runtime";
+import { getPlatformAdapter } from "../../lib/platform/runtimePlatformAdapter";
 
 const columnPreviewSchema = z.object({
   columnLabel: z.string(),
@@ -71,37 +71,18 @@ export type ColumnMapping = {
 };
 
 export async function uploadTemplateXlsx(file: File): Promise<ImportPreview> {
-  const formData = new FormData();
-  formData.append("file", file);
-  const environment = import.meta.env as unknown as Record<string, unknown>;
-  const baseUrl =
-    typeof environment.VITE_API_BASE_URL === "string"
-      ? environment.VITE_API_BASE_URL
-      : "/api/v1";
-  const response = await fetch(`${baseUrl}/imports/template-xlsx`, {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      Accept: "application/json",
-      ...(getAccessToken()
-        ? { Authorization: `Bearer ${getAccessToken()}` }
-        : {}),
-    },
-    body: formData,
-  });
-  if (!response.ok) {
-    throw new Error(`上传失败: ${response.status} ${response.statusText}`);
-  }
-  return importPreviewSchema.parse(await response.json());
+  return importPreviewSchema.parse(
+    await getDataAdapter().previewTemplateImport(file),
+  );
 }
 
 export function executeImport(
   jobId: string,
   mappings: ColumnMapping[],
 ): Promise<ImportJobStatus> {
-  return postJson(`/imports/${jobId}/execute`, importJobStatusSchema, {
-    mappings,
-  });
+  return getDataAdapter()
+    .executeTemplateImport(jobId, mappings)
+    .then((value) => importJobStatusSchema.parse(value));
 }
 
 /**
@@ -113,62 +94,42 @@ export function getImportErrors(
   limit = 200,
   offset = 0,
 ): Promise<ImportErrorList> {
-  return getJson(
-    `/imports/${jobId}/errors?limit=${limit}&offset=${offset}`,
-    importErrorListSchema,
-  );
+  return getDataAdapter()
+    .getImportErrors(jobId, limit, offset)
+    .then((value) => importErrorListSchema.parse(value));
 }
 
 /**
- * Trigger a browser download of the row-level import errors as a CSV file
- * (GET /imports/{jobId}/errors?format=csv).
+ * Save the row-level import errors as a CSV file through the platform adapter.
  */
 export async function downloadImportErrorsCsv(jobId: string): Promise<void> {
-  const environment = import.meta.env as unknown as Record<string, unknown>;
-  const baseUrl =
-    typeof environment.VITE_API_BASE_URL === "string"
-      ? environment.VITE_API_BASE_URL
-      : "/api/v1";
-  const response = await fetch(
-    `${baseUrl}/imports/${jobId}/errors?format=csv`,
-    {
-      method: "GET",
-      credentials: "include",
-      headers: {
-        Accept: "text/csv",
-        ...(getAccessToken()
-          ? { Authorization: `Bearer ${getAccessToken()}` }
-          : {}),
-      },
-    },
-  );
-  if (!response.ok) {
-    throw new Error(`下载错误明细失败: ${response.status} ${response.statusText}`);
-  }
-  const blob = await response.blob();
-  const filename = parseCsvFilename(
-    response.headers.get("Content-Disposition"),
+  const result = await getImportErrors(jobId, 200, 0);
+  const rows = [
+    ["Sheet", "行号", "列", "错误码", "信息", "原始值"],
+    ...result.errors.map((error) => [
+      error.sheet,
+      error.rowNumber,
+      error.columnName,
+      error.errorCode,
+      error.message,
+      error.rawValue,
+    ]),
+  ];
+  const csv = rows
+    .map((row) => row.map((value) => csvCell(value)).join(","))
+    .join("\r\n");
+  await getPlatformAdapter().saveFile(
+    new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }),
     `import-errors-${jobId}.csv`,
   );
-  triggerBrowserDownload(blob, filename);
 }
 
-function parseCsvFilename(
-  contentDisposition: string | null,
-  fallback: string,
-): string {
-  if (!contentDisposition) return fallback;
-  const match = contentDisposition.match(/filename="?([^";]+)"?/i);
-  return match?.[1] ? decodeURIComponent(match[1]) : fallback;
-}
-
-function triggerBrowserDownload(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
+function csvCell(value: unknown): string {
+  const text =
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+      ? String(value)
+      : "";
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
