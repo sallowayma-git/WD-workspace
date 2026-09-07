@@ -21,14 +21,16 @@ jobs:
           node-version: 24.15.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm format:check
-      # check:web runs the local-runtime guard first: it walks the import graph
-      # from main.tsx and fails if the product entry can reach an HTTP
-      # transport, an auth store or a bare fetch() again (ACC-001/ACC-003).
-      - run: pnpm run check:web
-      - run: pnpm run check:packages
-      - run: pnpm run test:web
-      - run: pnpm --dir apps/web build
+      # One gate definition, two runners. `gate:web` and `gate:desktop` are the
+      # two halves of the local `pnpm check`, so a green local run cannot go red
+      # here (that split is what let a format:check failure land on main).
+      # Do not re-list the individual steps in this file.
+      #
+      # gate:web = format:check -> check:web -> check:packages -> test:web ->
+      # build:web. check:web runs the local-runtime guard first: it walks the
+      # import graph from main.tsx and fails if the product entry can reach an
+      # HTTP transport, an auth store or a bare fetch() again (ACC-001/ACC-003).
+      - run: pnpm run gate:web
 
   desktop:
     runs-on: windows-latest
@@ -45,5 +47,5 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run check:desktop
-      - run: pnpm --dir apps/desktop tauri build --no-bundle
+      - run: pnpm run gate:desktop
+      - run: pnpm run build:desktop:no-bundle

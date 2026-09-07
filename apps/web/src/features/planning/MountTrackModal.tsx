@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Form, Input, InputNumber, Modal, Select, Space } from "antd";
-import { useEffect, useState } from "react";
-import { ApiError } from "../../lib/api/ApiError";
+import { useEffect } from "react";
+import { invalidateTaskViews } from "../tasks/taskActions";
 import { mountTrack } from "./trackApi";
 import {
   getTemplateDetail,
@@ -24,17 +24,17 @@ export function MountTrackModal({
   studentId,
   open,
   onClose,
+  initialTemplateId,
+  anchorDate,
 }: {
   studentId: string;
   open: boolean;
   onClose: () => void;
+  initialTemplateId?: string;
+  anchorDate?: string;
 }) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm<MountFormValues>();
-  const [override, setOverride] = useState<{
-    open: boolean;
-    message: string;
-  }>({ open: false, message: "" });
 
   const templatesQuery = useQuery({
     queryKey: ["templates-for-mount"],
@@ -103,54 +103,16 @@ export function MountTrackModal({
         priority: values.priority,
         note: values.note && values.note.length > 0 ? values.note : undefined,
         createFirstInstance: true,
-        confirmOverride: override.open,
       }),
-    onSuccess: async (track) => {
-      // The backend signals "needs override confirmation" by returning 200 OK
-      // with a track preview carrying warnings and no persisted id. Detect this
-      // structurally (id absent + warnings present) rather than by message text.
-      if (
-        track &&
-        track.id == null &&
-        Array.isArray(track.warnings) &&
-        track.warnings.length > 0
-      ) {
-        setOverride({
-          open: true,
-          message: track.warnings.join("；"),
-        });
-        return;
-      }
-      setOverride({ open: false, message: "" });
-      await queryClient.invalidateQueries({
-        queryKey: ["student-tracks", studentId],
-      });
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["student-tracks", studentId],
+        }),
+        invalidateTaskViews(queryClient),
+      ]);
       form.resetFields();
       onClose();
-    },
-    onError: (error) => {
-      // Override/conflict detection is based on ApiError.code and status, not
-      // on the localized message text. Codes that indicate a retry-with-override
-      // situation are the 409 conflict family and the 422 validation family
-      // returned by TrackService.mountTrack (see TrackService.java).
-      const OVERRIDE_CODES = new Set([
-        "TEMPLATE_VERSION_NOT_PUBLISHED",
-        "TRACK_VERSION_CONFLICT",
-        "TRACK_ORDINAL_INVALID",
-        "TRACK_ORDINAL_RANGE_INVALID",
-        "TRACK_START_ORDINAL_MISSING",
-        "TRACK_PRIORITY_INVALID",
-        "TRACK_POLICY_INVALID",
-        "TRACK_DEVICE_POLICY_INVALID",
-      ]);
-      if (
-        error instanceof ApiError &&
-        (error.status === 409 || error.status === 422) &&
-        error.code != null &&
-        OVERRIDE_CODES.has(error.code)
-      ) {
-        setOverride({ open: true, message: error.message });
-      }
     },
   });
 
@@ -159,14 +121,12 @@ export function MountTrackModal({
     form.setFieldValue("templateVersionId", undefined);
     form.setFieldValue("startOrdinal", undefined);
     form.setFieldValue("endOrdinal", undefined);
-    setOverride({ open: false, message: "" });
   }
 
   function handleVersionChange(value: string) {
     form.setFieldValue("templateVersionId", value);
     form.setFieldValue("startOrdinal", undefined);
     form.setFieldValue("endOrdinal", undefined);
-    setOverride({ open: false, message: "" });
   }
 
   function handleSubmit() {
@@ -177,15 +137,14 @@ export function MountTrackModal({
 
   return (
     <Modal
-      title="挂载任务轨道"
+      title="安排课程"
       open={open}
       onCancel={() => {
         form.resetFields();
-        setOverride({ open: false, message: "" });
         onClose();
       }}
       onOk={handleSubmit}
-      okText={override.open ? "确认 override 并挂载" : "挂载"}
+      okText="安排"
       confirmLoading={mountMutation.isPending}
       okButtonProps={{ disabled: !templateId || !versionId }}
       destroyOnHidden
@@ -194,6 +153,8 @@ export function MountTrackModal({
         form={form}
         layout="vertical"
         initialValues={{
+          templateId: initialTemplateId,
+          startDate: anchorDate,
           defaultUnitsPerSession: 1,
           priority: 50,
         }}
@@ -294,20 +255,11 @@ export function MountTrackModal({
           <Input.TextArea rows={2} maxLength={500} />
         </Form.Item>
       </Form>
-      {override.open ? (
-        <Alert
-          type="warning"
-          showIcon
-          message="需要 override 确认"
-          description={`${override.message} 点击“确认 override 并挂载”将以 override 方式挂载。`}
-          style={{ marginTop: 8 }}
-        />
-      ) : null}
-      {mountMutation.isError && !override.open ? (
+      {mountMutation.isError ? (
         <Alert
           type="error"
           showIcon
-          message="挂载失败"
+          message="安排失败"
           description={mountMutation.error?.message ?? "未知错误"}
           style={{ marginTop: 8 }}
         />

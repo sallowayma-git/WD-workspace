@@ -64,7 +64,9 @@ function renderModal(
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
+  const taskKeys = [["today", "2026-09-07"], ["workbench"], ["schedule"]];
+  for (const key of taskKeys) queryClient.setQueryData(key, { cached: true });
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <AntApp>
         <MountLongTaskModal
@@ -77,6 +79,7 @@ function renderModal(
       </AntApp>
     </QueryClientProvider>,
   );
+  return { ...view, queryClient, taskKeys };
 }
 
 describe("MountLongTaskModal", () => {
@@ -88,17 +91,15 @@ describe("MountLongTaskModal", () => {
   it("mounts with only the essential fields and previews the first item", async () => {
     const user = userEvent.setup({ delay: null });
     const mountLongTask = vi.fn().mockResolvedValue(mountedTrack);
-    renderModal({
+    const { queryClient, taskKeys } = renderModal({
       // 适配器的列表返回是分页信封，与 listLongTasks 的 zod 契约一致。
-      listLongTasks: vi
-        .fn()
-        .mockResolvedValue({
-          items: [longTask],
-          page: 0,
-          size: 1,
-          total: 1,
-          hasNext: false,
-        }),
+      listLongTasks: vi.fn().mockResolvedValue({
+        items: [longTask],
+        page: 0,
+        size: 1,
+        total: 1,
+        hasNext: false,
+      }),
       mountLongTask,
     });
 
@@ -127,19 +128,21 @@ describe("MountLongTaskModal", () => {
       Record<string, unknown> | undefined;
     expect(typeof call?.idempotencyKey).toBe("string");
     expect(String(call?.idempotencyKey).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      for (const key of taskKeys)
+        expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    });
   });
 
   it("explains that there is nothing to mount yet", async () => {
     renderModal({
-      listLongTasks: vi
-        .fn()
-        .mockResolvedValue({
-          items: [],
-          page: 0,
-          size: 0,
-          total: 0,
-          hasNext: false,
-        }),
+      listLongTasks: vi.fn().mockResolvedValue({
+        items: [],
+        page: 0,
+        size: 0,
+        total: 0,
+        hasNext: false,
+      }),
     });
     // jsdom 下 antd Modal 的动画让可见性断言不稳定，按存在断言即可。
     expect(await screen.findByText(/还没有长期任务/)).toBeInTheDocument();

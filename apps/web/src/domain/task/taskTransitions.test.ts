@@ -158,6 +158,27 @@ describe("TypeScript execution parity", () => {
     });
   });
 
+  it("never carries back into the past when a floor date is given", () => {
+    // 补日结场景：源日期是 08-17，但今天已经 08-20，落点只能往后。
+    expect(
+      carryForwardTask({
+        source: task,
+        newTaskId: "task-2",
+        calendar,
+        notBeforeDate: "2026-08-20",
+      }).target?.scheduledDate,
+    ).toBe("2026-08-21");
+    // 早于源日期的下限不起作用，日常日结照旧。
+    expect(
+      carryForwardTask({
+        source: task,
+        newTaskId: "task-2",
+        calendar,
+        notBeforeDate: "2026-08-10",
+      }).target?.scheduledDate,
+    ).toBe("2026-08-20");
+  });
+
   it("reuses an existing target instead of duplicating it", () => {
     const existing = {
       ...task,
@@ -439,19 +460,26 @@ describe("TypeScript execution parity", () => {
     }
   });
 
-  it("moves any live task to another student and detaches it from its track", () => {
-    const trackTask = rescheduleTask({
+  it("refuses to move a track task to another student but still moves loose ones", () => {
+    expect(() =>
+      rescheduleTask({
+        task: { ...task, trackId: "track-1", scheduleOrigin: "TRACK" },
+        targetDate: "2026-08-20",
+        targetStudentId: "student-2",
+        calendar,
+      }),
+    ).toThrowError("长期任务不能移动到其他学生");
+
+    // 同一个学生内改期不受影响：轨道关系原样保留。
+    const sameStudent = rescheduleTask({
       task: { ...task, trackId: "track-1", scheduleOrigin: "TRACK" },
       targetDate: "2026-08-20",
-      targetStudentId: "student-2",
       calendar,
     });
-    expect(trackTask).toMatchObject({
-      studentId: "student-2",
-      scheduledDate: "2026-08-20",
-      trackId: null,
-      itemOrdinal: null,
-      scheduleOrigin: "AD_HOC",
+    expect(sameStudent).toMatchObject({
+      studentId: task.studentId,
+      trackId: "track-1",
+      scheduleOrigin: "MANUAL",
     });
 
     const moved = rescheduleTask({
@@ -465,7 +493,10 @@ describe("TypeScript execution parity", () => {
       targetStudentId: "student-2",
       calendar,
     });
-    expect(moved.studentId).toBe("student-2");
-    expect(moved.scheduledDate).toBe("2026-08-20");
+    expect(moved).toMatchObject({
+      studentId: "student-2",
+      scheduledDate: "2026-08-20",
+      scheduleOrigin: "AD_HOC",
+    });
   });
 });

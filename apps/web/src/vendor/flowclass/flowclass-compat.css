@@ -4,10 +4,11 @@
   --flowcal-muted: #f4f6f8;
   --flowcal-accent: #145a8d;
   color: #1f2d3d;
+  overflow-x: auto;
 }
 
 .flowclass-scope .flowcal-month {
-  min-width: 720px;
+  min-width: 1540px;
   overflow: hidden;
   border: 1px solid var(--flowcal-border);
   border-radius: 6px;
@@ -17,7 +18,7 @@
 .flowclass-scope .flowcal-weekdays,
 .flowclass-scope .flowcal-month-grid {
   display: grid;
-  grid-template-columns: repeat(7, minmax(96px, 1fr));
+  grid-template-columns: repeat(7, minmax(220px, 1fr));
 }
 
 .flowclass-scope .flowcal-weekday {
@@ -133,20 +134,4 @@
 .flowclass-matrix-viewport {
   overflow: auto;
   contain: strict;
-}
-
-/* 学生工作台矩阵对齐（P2-WBK-UI）：antd 在 scroll.x 下给表头表格写入
-   min-width:100%，宽屏时会把多余宽度按比例分摊到各列；而虚拟化 body
-   的行是固定宽度单元格的 flex 布局，两侧列宽从此不一致，日期表头与
-   下方网格错位。这里把表头表格锁定为"列宽之和"的收缩宽度，与 body
-   逐列等宽；容器更宽时右侧留白，窄表时照常横向滚动。 */
-.flowclass-matrix-shell .ant-table table {
-  width: auto !important;
-  min-width: 0 !important;
-}
-
-@media (max-width: 820px) {
-  .flowclass-scope {
-    overflow-x: auto;
-  }
 }

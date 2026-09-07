@@ -71,7 +71,6 @@ export function mountTrack(input: {
   schedulingPolicy?: string;
   note?: string;
   createFirstInstance?: boolean;
-  confirmOverride?: boolean;
 }): Promise<Track> {
   const idempotencyKey = crypto.randomUUID();
   return getDataAdapter()
@@ -90,38 +89,18 @@ export function mountTrack(input: {
       devicePolicyOverride: null,
       note: input.note ?? null,
       createFirstInstance: input.createFirstInstance ?? false,
-      confirmOverride: input.confirmOverride ?? false,
     })
     .then((value) => trackSchema.parse(value));
 }
 
-const scheduledTaskSchema = z.object({
-  id: z.string().uuid(),
-  itemOrdinal: z.number(),
-  scheduledDate: z.string(),
-  status: z.literal("PENDING"),
-});
-
-const scheduleTrackItemsResultSchema = z.object({
-  instances: z.array(scheduledTaskSchema),
-  warnings: z.array(z.string()),
-});
-
-export type ScheduleTrackItemsResult = z.infer<
-  typeof scheduleTrackItemsResultSchema
->;
-
-export function scheduleTrackItems(
+export function resumeSequenceTrack(
   trackId: string,
-  input: {
-    startOrdinal: number;
-    unitCount: number;
-    date: string;
-    manualOverride?: boolean;
-    overrideReason?: string;
-  },
-): Promise<ScheduleTrackItemsResult> {
+  expectedVersion: number,
+): Promise<Track> {
   return getDataAdapter()
-    .scheduleTrackItems(trackId, input)
-    .then((value) => scheduleTrackItemsResultSchema.parse(value));
+    .resumeSequenceTrack(trackId, {
+      expectedVersion,
+      idempotencyKey: crypto.randomUUID(),
+    })
+    .then((value) => trackSchema.parse(value));
 }

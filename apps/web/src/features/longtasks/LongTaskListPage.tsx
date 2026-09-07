@@ -15,13 +15,14 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError } from "../../lib/api/ApiError";
+import { describeSeriesProgression } from "../../domain/task/seriesTitle";
 import { listLongTasks, type LongTask } from "./longTaskApi";
 import { CreateLongTaskModal } from "./CreateLongTaskModal";
 
 /**
- * 长期任务列表。用户视角只有：名称、标题规则、多少学生在用、范围（持续还是
- * 起止序号）——模板编码/版本/发布状态是课程模板（ITEMIZED）的内部概念，
- * 不在这里出现。
+ * 长期任务列表。用户视角只有：名称、怎么接排、多少学生在用、状态——模板编码/
+ * 版本/发布状态是课程模板（ITEMIZED）的内部概念，标题模板里的 {n} 占位符是
+ * 实现细节，两者都不在这里出现。
  */
 export function LongTaskListPage() {
   const [search, setSearch] = useState("");
@@ -111,22 +112,21 @@ export function LongTaskListPage() {
                 ),
               },
               {
-                title: "任务规则",
-                dataIndex: "titlePattern",
+                title: "接排方式",
+                // 只展示助教能读的序号推进，不展示 "{n}" 原始模板——模板语法
+                // 是实现细节，需要改的时候进高级编辑，不在列表里科普。
+                render: (_: unknown, record: LongTask) =>
+                  describeSeriesProgression({
+                    titlePattern: record.titlePattern,
+                    startOrdinal: record.defaultStartOrdinal,
+                    endOrdinal: record.endOrdinal,
+                  }) ?? "—",
               },
               {
-                title: "当前使用",
+                title: "使用中",
                 dataIndex: "activeTrackCount",
                 width: 120,
                 render: (count: number) => `${count} 名学生`,
-              },
-              {
-                title: "范围",
-                width: 140,
-                render: (_: unknown, record: LongTask) =>
-                  record.endOrdinal != null
-                    ? `${record.defaultStartOrdinal}–${record.endOrdinal}`
-                    : "持续",
               },
               {
                 title: "状态",

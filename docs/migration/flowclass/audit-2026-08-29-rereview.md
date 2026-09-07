@@ -6,11 +6,11 @@
 
 实测门禁（本次复核现场执行，非引用旧记录）：
 
-| 门禁 | 命令 | 结果 |
-| --- | --- | --- |
+| 门禁          | 命令                                   | 结果                                                                |
+| ------------- | -------------------------------------- | ------------------------------------------------------------------- |
 | local-runtime | `node scripts/check-local-runtime.mjs` | `local-runtime-ok (61 reachable source modules, no HTTP transport)` |
-| Web lint | `eslint . --max-warnings 0` | 0 problem |
-| Web 测试 | `vitest run` | **16 files / 84 tests，全绿**，28.4s |
+| Web lint      | `eslint . --max-warnings 0`            | 0 problem                                                           |
+| Web 测试      | `vitest run`                           | **16 files / 84 tests，全绿**，28.4s                                |
 
 ---
 
@@ -29,12 +29,12 @@
 
 **与既有模式的对比（这是本条最硬的证据）**：同一个文件里其余幂等命令都做对了——
 
-| 命令 | 幂等分支 | 做法 |
-| --- | --- | --- |
-| `mountTrack` (:1051-1054) | `return this.getTrack(String(existing.value))` | 存标量 id，重放时**重新读视图** |
-| `undoCarryover` (:1569) | `return existing.value` | 存的就是完整响应对象 (:1577-1583, :1599) |
-| `completeTask` (:1744) | `return existing.value` | 存的就是完整响应对象 (:1754-1757, :1813) |
-| **`createAdHocTask` (:1249)** | `return existing.value` | **只存了 `{taskId}`，重放时未重新读视图** |
+| 命令                          | 幂等分支                                       | 做法                                      |
+| ----------------------------- | ---------------------------------------------- | ----------------------------------------- |
+| `mountTrack` (:1051-1054)     | `return this.getTrack(String(existing.value))` | 存标量 id，重放时**重新读视图**           |
+| `undoCarryover` (:1569)       | `return existing.value`                        | 存的就是完整响应对象 (:1577-1583, :1599)  |
+| `completeTask` (:1744)        | `return existing.value`                        | 存的就是完整响应对象 (:1754-1757, :1813)  |
+| **`createAdHocTask` (:1249)** | `return existing.value`                        | **只存了 `{taskId}`，重放时未重新读视图** |
 
 即 `createAdHocTask` 是四条幂等命令里唯一偏离既有模式的一条，属于明确的一致性问题，一行即可修复（对齐 `mountTrack`：`return this.getTaskView(taskId)`）。
 
@@ -57,6 +57,7 @@
 **严重度**：维持 P1。理由不是"会返回错形状"，而是"BR-012 对临时任务创建未真正落地，且幂等分支形状错误会在任何引入 key 复用的改动后立刻变成线上故障"。
 
 **修复建议（二选一，不能维持现状）**
+
 1. 幂等分支改为 `return this.getTaskView(taskId)`；同时把 `idempotencyKey` 的生成上移到"用户意图层"（composer 一次输入生成一次，重试复用），使幂等真正生效；或
 2. 认定本地单用户不需要创建幂等，则删除 `idempotencyKey` 字段、幂等记录与 BR-012 注释，并在文档中废止。
 
@@ -77,13 +78,13 @@
 
 JavaScript 的 `Date` 构造器对越界字段做静默进位。本机实测（node v26.4.0）：
 
-| 输入 | 规范化结果 | 是否应拒绝 |
-| --- | --- | --- |
-| `2026-02-31` | `2026-03-03` | 是 |
-| `2026-04-31` | `2026-05-01` | 是 |
-| `2026-02-29` | `2026-03-01` | 是（2026 非闰年） |
-| `2025-02-29` | `2025-03-01` | 是 |
-| `2026-13-01` | `2027-01-01` | 是 |
+| 输入         | 规范化结果   | 是否应拒绝          |
+| ------------ | ------------ | ------------------- |
+| `2026-02-31` | `2026-03-03` | 是                  |
+| `2026-04-31` | `2026-05-01` | 是                  |
+| `2026-02-29` | `2026-03-01` | 是（2026 非闰年）   |
+| `2025-02-29` | `2025-03-01` | 是                  |
+| `2026-13-01` | `2027-01-01` | 是                  |
 | `2026-00-10` | `2025-12-10` | 是（月份 0 未拦截） |
 
 **全部被静默接受。**
@@ -116,24 +117,24 @@ UI 侧 antd DatePicker / `<input type="date">` 一般不产生 `02-31`；改期/
 
 ### 先裁决：文档到底要求 BLOCKED 能不能改期
 
-| 来源 | 内容 |
-| --- | --- |
-| `DocsHarness/01` §7.1 状态机（:724） | `BLOCKED --> PENDING: 人工重新安排` |
-| `DocsHarness/01` §7.3 异常表（:749） | 找不到下一可学习日 → 任务标记 BLOCKED，进入今日异常 |
-| `DocsHarness/02` §9.4 `rescheduleTask`（:950） | **仅允许 PENDING/BLOCKED** |
-| `DocsHarness/02` §9.4 `lockTask`（:964） | 只有 PENDING/BLOCKED 可锁定 |
+| 来源                                           | 内容                                                |
+| ---------------------------------------------- | --------------------------------------------------- |
+| `DocsHarness/01` §7.1 状态机（:724）           | `BLOCKED --> PENDING: 人工重新安排`                 |
+| `DocsHarness/01` §7.3 异常表（:749）           | 找不到下一可学习日 → 任务标记 BLOCKED，进入今日异常 |
+| `DocsHarness/02` §9.4 `rescheduleTask`（:950） | **仅允许 PENDING/BLOCKED**                          |
+| `DocsHarness/02` §9.4 `lockTask`（:964）       | 只有 PENDING/BLOCKED 可锁定                         |
 
 → **改期 BLOCKED 是文档明确要求的动作**，而且是 BLOCKED 唯一的出口（这是它存在的意义：任务卡在没有可学习日的地方，靠助教手动挪走）。
 
 ### 因此逐层判定
 
-| 层 | 位置 | 行为 | 判定 |
-| --- | --- | --- | --- |
-| domain | `taskTransitions.ts:135-151` | 只拒 `locked` / `CARRIED_OVER` / `CANCELLED` | **正确** |
-| 后端 SQL | `sqliteLocalDataAdapter.ts:1892-1898` | `WHERE id=? AND version=? AND locked = 0`，无 status 条件 | **正确** |
-| Schedule 拖拽 | `StudentSchedulePage.tsx:1370` | `immovable = task.locked \|\| task.carriedOver === true` | **正确** |
-| Workbench 拖拽 | `StudentWorkbenchPage.tsx:813` | 同上 | **正确** |
-| 卡片 | `TaskCard.tsx:123` | `locked = task.locked \|\| task.status === "BLOCKED"` | **错误** |
+| 层             | 位置                                  | 行为                                                      | 判定     |
+| -------------- | ------------------------------------- | --------------------------------------------------------- | -------- |
+| domain         | `taskTransitions.ts:135-151`          | 只拒 `locked` / `CARRIED_OVER` / `CANCELLED`              | **正确** |
+| 后端 SQL       | `sqliteLocalDataAdapter.ts:1892-1898` | `WHERE id=? AND version=? AND locked = 0`，无 status 条件 | **正确** |
+| Schedule 拖拽  | `StudentSchedulePage.tsx:1370`        | `immovable = task.locked \|\| task.carriedOver === true`  | **正确** |
+| Workbench 拖拽 | `StudentWorkbenchPage.tsx:813`        | 同上                                                      | **正确** |
+| 卡片           | `TaskCard.tsx:123`                    | `locked = task.locked \|\| task.status === "BLOCKED"`     | **错误** |
 
 原报告把"拖拽不拦 BLOCKED"当缺陷，方向反了——**拖拽是对的，卡片是错的**。
 
@@ -153,6 +154,7 @@ UI 侧 antd DatePicker / `<input type="date">` 一般不产生 `02-31`；改期/
 → 任务一旦 BLOCKED，即使被拖到有效日期，也仍带 `BLOCKED` 状态：仍计入 `blockedTasks`（adapter :1637 / `TodayPage.tsx:523` 的红色指标），`TaskDetailDrawer`（:36）仍显示"已阻塞"红标，且永远无法完成。**PRD §7.1 的 `BLOCKED --> PENDING` 边在实现中不存在。**
 
 **修复建议**
+
 1. `TaskCard.tsx:123` 去掉 `|| task.status === "BLOCKED"`，改为只对 BLOCKED 关闭"勾选完成"（BLOCKED 确实不可完成），保留改期与菜单；
 2. `rescheduleTask`（domain + adapter SQL）对 `status === "BLOCKED"` 的输入显式落到 `PENDING`，落点应是"改期成功即解除阻塞"；
 3. 补测试：`BLOCKED + locked=false` 可改期、改期后 `status === "PENDING"`。
@@ -171,17 +173,18 @@ PRD §7.3 的"进入今日异常"与 SDD §11（`02:1173` `GET /today/exceptions
 
 **代码事实确认**（`sqliteLocalDataAdapter.ts:1731-1739` 注释解释得很清楚）：
 
-| 命令 | 版本来源 |
-| --- | --- |
-| `updateTask` (:1923) | `currentVersion()` — 数据库当前版本 |
-| `linkMainTask` (:2026) | `currentVersion()` |
-| `reorderTask` (:2117) | `currentVersion()` |
-| `rescheduleTask` (:1868-1910) | 事务内读到的行版本 |
-| **`deleteTask` (:2047)** | **`requiredNumber(input, "expectedVersion")` — 严格校验** |
+| 命令                          | 版本来源                                                  |
+| ----------------------------- | --------------------------------------------------------- |
+| `updateTask` (:1923)          | `currentVersion()` — 数据库当前版本                       |
+| `linkMainTask` (:2026)        | `currentVersion()`                                        |
+| `reorderTask` (:2117)         | `currentVersion()`                                        |
+| `rescheduleTask` (:1868-1910) | 事务内读到的行版本                                        |
+| **`deleteTask` (:2047)**      | **`requiredNumber(input, "expectedVersion")` — 严格校验** |
 
 **但这不是契约漂移**，而是已被文档与测试双向下锚的明确规则：**破坏性命令（删除）严格校验 `expectedVersion`；非破坏性命令（改期/更新/关联/重排）以数据库当前版本为准、last-write-wins。**
 
 证据：
+
 - `docs/migration/flowclass/acceptance.md:111` 已作为"产品调整：排期修改直接生效"记录在案；
 - 测试双向下锚：`sqliteLocalDataAdapter.test.ts:765` "applies a move even when the caller passes a stale version" + `:736` "does not delete a task when delete version is stale"。
 
@@ -222,12 +225,12 @@ Tauri WebView2 下 `<a download>` 与 `navigator.clipboard` 的实际行为无�
 
 ### 5.2 文档债务（确认，并新增 2 条）
 
-| 项 | 现状 | 处置 |
-| --- | --- | --- |
-| `docs/runbooks/local-development.md:9` | 写 "Node 20+ / pnpm"；根 `package.json:7` 与 README 要求 `>=24.15.0` | **照文档做会失败**。实测本机默认 PATH 的 node 是 v22.22.2（不满足 engines），系统 node v26.4.0 才满足。建议改为 `Node >= 24.15.0` 并注明"不要使用 22.x" |
-| `DocsHarness/04` §19.9:1423 | 只写"删除严格校验 expectedVersion"，未说明非破坏性命令宽松 | 补一句对称说明 |
-| `acceptance.md:20` | 记 "59 个可达源码模块"，实测 61 | 该行已注明"以 `pnpm check` 实时输出为准"，可接受漂移，但建议同步为 61 |
-| `baseline.md` F0~F5 收口 | 已有（2026-08-28）：F0-004 跳过不可补、F0-005 部分完成（仅 Calendar PoC 两张截图，缺 AttendanceSheet/Availability）、F1 等效完成、F3/F4 门禁失效、F5 等效完成 | 残余：**DLY-T08 无独立用例**，仅以 `sqliteLocalDataAdapter.test.ts` "runs the student-template-track execution flow atomically" 内的 ACC-065 断言作等效证据，弱于零写入断言 |
+| 项                                     | 现状                                                                                                                                                          | 处置                                                                                                                                                                        |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/runbooks/local-development.md:9` | 写 "Node 20+ / pnpm"；根 `package.json:7` 与 README 要求 `>=24.15.0`                                                                                          | **照文档做会失败**。实测本机默认 PATH 的 node 是 v22.22.2（不满足 engines），系统 node v26.4.0 才满足。建议改为 `Node >= 24.15.0` 并注明"不要使用 22.x"                     |
+| `DocsHarness/04` §19.9:1423            | 只写"删除严格校验 expectedVersion"，未说明非破坏性命令宽松                                                                                                    | 补一句对称说明                                                                                                                                                              |
+| `acceptance.md:20`                     | 记 "59 个可达源码模块"，实测 61                                                                                                                               | 该行已注明"以 `pnpm check` 实时输出为准"，可接受漂移，但建议同步为 61                                                                                                       |
+| `baseline.md` F0~F5 收口               | 已有（2026-08-28）：F0-004 跳过不可补、F0-005 部分完成（仅 Calendar PoC 两张截图，缺 AttendanceSheet/Availability）、F1 等效完成、F3/F4 门禁失效、F5 等效完成 | 残余：**DLY-T08 无独立用例**，仅以 `sqliteLocalDataAdapter.test.ts` "runs the student-template-track execution flow atomically" 内的 ACC-065 断言作等效证据，弱于零写入断言 |
 
 ### 5.3 发布债务（确认）
 
@@ -248,18 +251,18 @@ Tauri WebView2 下 `<a download>` 与 `navigator.clipboard` 的实际行为无�
 
 ### 6.2 F0~F9 逐段现状
 
-| 阶段 | 状态 | 依据 |
-| --- | --- | --- |
-| F0 冻结与基线 | 部分完成 | F0-001/002/003/006 有产物（`baseline.md`、`provenance.md`、回归用例）；**F0-004 永久不可补**（旧页面依赖已删的 Spring+PostgreSQL）；F0-005 仅 Calendar PoC 两张截图 |
-| F1 样式兼容层 | 等效完成 | 手写 scoped CSS 等价达成 R8 意图，非 STYLE-001 原文 Tailwind 方案（已 superseded） |
-| F2 Calendar PoC | 完成 | 截图 + Partial adoption 决策 + 哈希现场复核吻合 |
-| F3 Matrix 融合 | 等效完成 | 过渡期门禁"在现有 WD 后端数据上可完整操作"随后端退役失效，以最终 SQLite 验收为准 |
-| F4 Availability UI | 等效完成 | 同上 |
-| F5 Delay 提纯 | 等效完成（弱证据） | TS 算法与测试在库；与 Java 行为对照仅有基线日单侧证据；**DLY-T08 缺独立用例** |
-| F6 统一命令 | 完成 | 04 §19.9 明载；三视图同源有测试 |
-| F7 本地 SQLite | 完成 | 实测 local-runtime 61 模块无 HTTP transport |
-| F8 清理在线架构 | 完成 | `apps/api` 已删，无 Java/PostgreSQL 依赖 |
-| F9 完整验收 | **未收口** | AUTO 42 / MANUAL 4 / GAP 0，**MANUAL 4 无用户签字记录** |
+| 阶段               | 状态               | 依据                                                                                                                                                                |
+| ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F0 冻结与基线      | 部分完成           | F0-001/002/003/006 有产物（`baseline.md`、`provenance.md`、回归用例）；**F0-004 永久不可补**（旧页面依赖已删的 Spring+PostgreSQL）；F0-005 仅 Calendar PoC 两张截图 |
+| F1 样式兼容层      | 等效完成           | 手写 scoped CSS 等价达成 R8 意图，非 STYLE-001 原文 Tailwind 方案（已 superseded）                                                                                  |
+| F2 Calendar PoC    | 完成               | 截图 + Partial adoption 决策 + 哈希现场复核吻合                                                                                                                     |
+| F3 Matrix 融合     | 等效完成           | 过渡期门禁"在现有 WD 后端数据上可完整操作"随后端退役失效，以最终 SQLite 验收为准                                                                                    |
+| F4 Availability UI | 等效完成           | 同上                                                                                                                                                                |
+| F5 Delay 提纯      | 等效完成（弱证据） | TS 算法与测试在库；与 Java 行为对照仅有基线日单侧证据；**DLY-T08 缺独立用例**                                                                                       |
+| F6 统一命令        | 完成               | 04 §19.9 明载；三视图同源有测试                                                                                                                                     |
+| F7 本地 SQLite     | 完成               | 实测 local-runtime 61 模块无 HTTP transport                                                                                                                         |
+| F8 清理在线架构    | 完成               | `apps/api` 已删，无 Java/PostgreSQL 依赖                                                                                                                            |
+| F9 完整验收        | **未收口**         | AUTO 42 / MANUAL 4 / GAP 0，**MANUAL 4 无用户签字记录**                                                                                                             |
 
 ### 6.3 判定：**当前不可交付**
 
@@ -291,12 +294,12 @@ Tauri WebView2 下 `<a download>` 与 `navigator.clipboard` 的实际行为无�
 
 ## 7. 与上一轮审计（audit-2026-08-27）的差异
 
-| 项 | 上一轮 | 本次 |
-| --- | --- | --- |
-| 临时任务幂等 | 未提出 | 新增：形状错误 + 幂等事实上未生效 |
-| 无效日历日期 | 未提出 | 新增：可入库 + 日结误扫 + lineage 日期不自洽 |
-| BLOCKED 拖拽 | 未提出 | **改判为不成立**；另发现 BLOCKED 无出口（P1）与 TaskCard 误锁（P2） |
-| currentVersion 契约 | 记为"契约漂移点" | 改判为已记录的产品决策（acceptance.md + 双向测试），降级为文档债 |
-| 跨学生父子关系 | 记为"待产品确认" | 改判为 P3 一致性缺陷（违反代码自述原则） |
-| Node 版本文档 | 未提出 | 新增 |
-| 发布债务 | 已记录 | 复核确认（274 条变更 / HEAD 3b93f57） |
+| 项                  | 上一轮           | 本次                                                                |
+| ------------------- | ---------------- | ------------------------------------------------------------------- |
+| 临时任务幂等        | 未提出           | 新增：形状错误 + 幂等事实上未生效                                   |
+| 无效日历日期        | 未提出           | 新增：可入库 + 日结误扫 + lineage 日期不自洽                        |
+| BLOCKED 拖拽        | 未提出           | **改判为不成立**；另发现 BLOCKED 无出口（P1）与 TaskCard 误锁（P2） |
+| currentVersion 契约 | 记为"契约漂移点" | 改判为已记录的产品决策（acceptance.md + 双向测试），降级为文档债    |
+| 跨学生父子关系      | 记为"待产品确认" | 改判为 P3 一致性缺陷（违反代码自述原则）                            |
+| Node 版本文档       | 未提出           | 新增                                                                |
+| 发布债务            | 已记录           | 复核确认（274 条变更 / HEAD 3b93f57）                               |

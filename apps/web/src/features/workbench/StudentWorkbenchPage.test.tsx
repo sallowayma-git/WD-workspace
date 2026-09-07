@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DataAdapter } from "../../data/DataAdapter";
 import { setDataAdapterForTests } from "../../data/runtime";
 import { StudentWorkbenchPage } from "./StudentWorkbenchPage";
-import { getWorkbenchRescheduleInput } from "./workbenchDrag";
+import { resolveWorkbenchDrop } from "./workbenchDrag";
 
 const LIN = "10000000-0000-4000-8000-000000000001";
 const WANG = "10000000-0000-4000-8000-000000000002";
@@ -80,13 +80,13 @@ function workbenchPayload() {
   };
 }
 
-function renderPage() {
+function renderPage(initialEntry = "/workbench") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <AntApp>
           <StudentWorkbenchPage />
         </AntApp>
@@ -99,6 +99,22 @@ describe("StudentWorkbenchPage matrix acceptance", () => {
   afterEach(() => {
     setDataAdapterForTests(null);
     vi.restoreAllMocks();
+  });
+
+  it("restores its week and student filter from the URL", async () => {
+    const getWorkbench = vi.fn().mockResolvedValue(workbenchPayload());
+    setDataAdapterForTests({ getWorkbench } as unknown as DataAdapter);
+    renderPage("/workbench?week=2026-08-24&search=%E6%9E%97");
+    await waitFor(() =>
+      expect(getWorkbench).toHaveBeenLastCalledWith("2026-08-24", "2026-08-30"),
+    );
+    expect(await screen.findByLabelText("搜索学生")).toHaveValue("林");
+    expect(
+      await screen.findByRole("link", { name: "林同学 排期" }),
+    ).toHaveAttribute("href", `/students/${LIN}/schedule?date=2026-08-24`);
+    expect(
+      screen.queryByRole("link", { name: "王同学 排期" }),
+    ).not.toBeInTheDocument();
   });
 
   it("lays students down the rows and the seven dates across the columns", async () => {
@@ -173,7 +189,14 @@ describe("StudentWorkbenchPage matrix acceptance", () => {
   });
 
   it("keeps a task checkbox clickable inside the draggable matrix card", async () => {
-    const completeTask = vi.fn(() => Promise.resolve({}));
+    const completeTask = vi.fn(() =>
+      Promise.resolve({
+        taskId: "20000000-0000-4000-8000-000000000001",
+        status: "COMPLETED",
+        currentOrdinal: null,
+        chainWarning: null,
+      }),
+    );
     setDataAdapterForTests({
       getWorkbench: () => Promise.resolve(workbenchPayload()),
       completeTask,
@@ -223,11 +246,14 @@ describe("StudentWorkbenchPage matrix acceptance", () => {
       },
     } as unknown as DragEndEvent;
 
-    expect(getWorkbenchRescheduleInput(dragEnd)).toEqual({
-      taskId: "task-cross-student",
-      version: 3,
-      targetDate: "2026-08-25",
-      targetStudentId: WANG,
+    expect(resolveWorkbenchDrop(dragEnd)).toEqual({
+      kind: "reschedule",
+      input: {
+        taskId: "task-cross-student",
+        version: 3,
+        targetDate: "2026-08-25",
+        targetStudentId: WANG,
+      },
     });
   });
 
@@ -263,6 +289,40 @@ describe("StudentWorkbenchPage matrix acceptance", () => {
       },
       over: { id: "cell", data: { current: target } },
     } as unknown as DragEndEvent;
-    expect(getWorkbenchRescheduleInput(dragEnd)).toBeNull();
+    expect(resolveWorkbenchDrop(dragEnd)).toEqual({ kind: "ignore" });
+  });
+
+  // 长期任务的轨道属于原学生，跨行拖拽必须被拒掉并说明原因。
+  it.each([
+    ["trackId", { trackId: "30000000-0000-4000-8000-000000000001" }],
+    ["sourceType TRACK", { sourceType: "TRACK" }],
+  ])("refuses to drag a track task (%s) onto another student", (_l, bound) => {
+    const dragData = {
+      taskId: "task-track",
+      sourceStudentId: LIN,
+      sourceDate: "2026-08-24",
+      version: 2,
+      locked: false,
+      carriedOver: false,
+      title: "真题2024 第7项",
+      ...bound,
+    };
+    const build = (targetStudentId: string, targetDate: string) =>
+      ({
+        active: { id: "task-track", data: { current: dragData } },
+        over: {
+          id: "cell",
+          data: { current: { targetStudentId, targetDate, available: true } },
+        },
+      }) as unknown as DragEndEvent;
+
+    expect(resolveWorkbenchDrop(build(WANG, "2026-08-25"))).toEqual({
+      kind: "refuse",
+      reason: "「真题2024 第7项」是长期任务，只能在同一个学生里改期",
+    });
+    // 同一个学生内改期仍然允许。
+    expect(resolveWorkbenchDrop(build(LIN, "2026-08-25"))).toMatchObject({
+      kind: "reschedule",
+    });
   });
 });

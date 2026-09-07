@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DataAdapter } from "../../data/DataAdapter";
 import { setDataAdapterForTests } from "../../data/runtime";
 import { TodayPage } from "./TodayPage";
+import { StudentSchedulePage } from "../schedule/StudentSchedulePage";
 
 const LIN = "10000000-0000-4000-8000-000000000001";
 const WANG = "10000000-0000-4000-8000-000000000002";
@@ -64,14 +65,20 @@ function todayPayload(overrides: { linStatus?: string } = {}) {
   };
 }
 
-function renderPage() {
+function renderPage(initialEntry = "/today") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <TodayPage />
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes>
+          <Route path="/today" element={<TodayPage />} />
+          <Route
+            path="/students/:studentId/schedule"
+            element={<StudentSchedulePage />}
+          />
+        </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -81,6 +88,52 @@ describe("TodayPage acceptance", () => {
   afterEach(() => {
     setDataAdapterForTests(null);
     vi.restoreAllMocks();
+  });
+
+  it("carries the selected date into a student schedule and keeps it on return", async () => {
+    const user = userEvent.setup();
+    const selectedDate = "2026-09-15";
+    const getToday = vi.fn().mockResolvedValue(todayPayload());
+    const getSchedule = vi.fn().mockResolvedValue({
+      studentId: LIN,
+      studentName: "林同学",
+      studentCode: "S001",
+      devicePolicy: "ALLOWED",
+      fromDate: selectedDate,
+      toDate: selectedDate,
+      view: "week",
+      days: [],
+    });
+    setDataAdapterForTests({
+      getToday,
+      getSchedule,
+      getTodayCarryovers: vi.fn().mockResolvedValue([]),
+    } as unknown as DataAdapter);
+    renderPage(`/today?date=${selectedDate}`);
+    await waitFor(() =>
+      expect(getToday).toHaveBeenLastCalledWith(selectedDate),
+    );
+    const link = (await screen.findAllByRole("link", { name: "排期" }))[0];
+    expect(link).toHaveAttribute(
+      "href",
+      `/students/${LIN}/schedule?date=${selectedDate}`,
+    );
+    await user.click(link);
+    await screen.findByText("林同学 的排期");
+    expect(getSchedule).toHaveBeenLastCalledWith(LIN, {
+      from: selectedDate,
+      view: "week",
+    });
+    await user.click(screen.getByRole("button", { name: "月视图" }));
+    await waitFor(() =>
+      expect(getSchedule).toHaveBeenLastCalledWith(LIN, {
+        from: selectedDate,
+        view: "month",
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: /返回/ }));
+    await screen.findByText("林同学");
+    expect(getToday).toHaveBeenLastCalledWith(selectedDate);
   });
 
   it("opens on the local business date and groups tasks by student", async () => {
@@ -114,7 +167,12 @@ describe("TodayPage acceptance", () => {
       (input: Record<string, unknown>) => Promise<unknown>
     >(() => {
       completed = true;
-      return Promise.resolve({});
+      return Promise.resolve({
+        taskId: LIN_TASK,
+        status: "COMPLETED",
+        currentOrdinal: null,
+        chainWarning: null,
+      });
     });
     const getToday = vi.fn(() =>
       Promise.resolve(
@@ -149,6 +207,28 @@ describe("TodayPage acceptance", () => {
         screen.getByRole("checkbox", { name: "任务 密卷08 阅读" }),
       ).toBeChecked(),
     );
+  });
+
+  it("drills the blocked count down to the tasks behind it", async () => {
+    const payload = todayPayload({ linStatus: "BLOCKED" });
+    payload.metrics.blockedTasks = 1;
+    setDataAdapterForTests({
+      getToday: () => Promise.resolve(payload),
+      getTodayCarryovers: () => Promise.resolve([]),
+    } as unknown as DataAdapter);
+
+    renderPage();
+
+    // 数字本身不够用：助教要知道是谁的哪一项被卡住了。
+    await userEvent.click(
+      await screen.findByRole("button", { name: /^明\s*细$/ }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("密卷08 阅读")).toBeInTheDocument();
+    expect(within(dialog).getByText(/林同学/)).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("link", { name: "去改期" }),
+    ).toHaveAttribute("href", `/students/${LIN}/schedule?date=${localToday()}`);
   });
 
   it("creates an ad-hoc task inline for one student", async () => {

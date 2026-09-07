@@ -264,7 +264,6 @@ export function TemplateDetailPage() {
 
       {draftVersion ? (
         <DraftItemEditor
-          versionId={draftVersion.id}
           items={itemsQuery.data ?? []}
           loading={itemsQuery.isPending}
           saving={saveItemsMutation.isPending}
@@ -282,14 +281,12 @@ export function TemplateDetailPage() {
 }
 
 function DraftItemEditor({
-  versionId,
   items,
   loading,
   saving,
   error,
   onSave,
 }: {
-  versionId: string;
   items: TemplateItem[];
   loading: boolean;
   saving: boolean;
@@ -362,7 +359,7 @@ function DraftItemEditor({
 
   return (
     <Card
-      title={`草稿单元编辑（${versionId.slice(0, 8)}…）`}
+      title="草稿单元编辑"
       extra={
         editing ? (
           <Space>

@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import type { Track } from "./trackApi";
 import { TrackProgressPanel } from "./TrackProgressPanel";
 
@@ -61,6 +62,10 @@ describe("TrackProgressPanel", () => {
     // points without opening the database.
     expect(screen.getByText("8/20")).toBeVisible();
     expect(screen.getByText("进行中")).toBeVisible();
+    expect(screen.queryByText("版本已绑定")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(track.templateVersionId!),
+    ).not.toBeInTheDocument();
   });
 
   it("falls back to the track columns when no progress projection is present", () => {
@@ -81,7 +86,24 @@ describe("TrackProgressPanel", () => {
     expect(screen.getByText("一天一句长难句 Day")).toBeVisible();
     expect(screen.getByText("当前第 8 项 · 已完成 7 次")).toBeVisible();
     expect(screen.queryByText("8/20")).not.toBeInTheDocument();
-    expect(screen.queryByText(/绑定版本/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/绑定/)).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("offers an explicit recovery action when a sequence track is stalled", async () => {
+    const onResume = vi.fn();
+    const stalled = {
+      ...sequenceTrack,
+      warnings: ["没有待完成任务，下一项未排期"],
+    };
+    render(
+      <TrackProgressPanel
+        tracks={[stalled]}
+        onResumeSequenceTrack={onResume}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "重新接排" }));
+    expect(onResume).toHaveBeenCalledWith(stalled);
   });
 });

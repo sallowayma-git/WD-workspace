@@ -25,26 +25,39 @@ export type WorkbenchRescheduleInput = {
   targetStudentId: string;
 };
 
-export function getWorkbenchRescheduleInput({
+/** refuse 要给出理由：拒绝换人的拖拽必须让助教看到原因，否则像卡住了。 */
+export type WorkbenchDropOutcome =
+  | { kind: "reschedule"; input: WorkbenchRescheduleInput }
+  | { kind: "ignore" }
+  | { kind: "refuse"; reason: string };
+
+export function resolveWorkbenchDrop({
   active,
   over,
-}: DragEndEvent): WorkbenchRescheduleInput | null {
-  if (!over) return null;
+}: DragEndEvent): WorkbenchDropOutcome {
+  if (!over) return { kind: "ignore" };
   const dragData = active.data.current as WorkbenchDragData | undefined;
   const dropData = over.data.current as WorkbenchDropData | undefined;
-  if (!dragData || !dropData) return null;
-  if (
-    dragData.locked ||
-    dragData.carriedOver ||
-    (dragData.sourceStudentId === dropData.targetStudentId &&
-      dragData.sourceDate === dropData.targetDate)
-  ) {
-    return null;
+  if (!dragData || !dropData) return { kind: "ignore" };
+  if (dragData.locked || dragData.carriedOver) return { kind: "ignore" };
+  const crossStudent = dragData.sourceStudentId !== dropData.targetStudentId;
+  if (!crossStudent && dragData.sourceDate === dropData.targetDate) {
+    return { kind: "ignore" };
+  }
+  // 轨道跟着原学生：跨学生只能换临时任务，长期任务这一条实例不能搬走。
+  if (crossStudent && (dragData.trackId || dragData.sourceType === "TRACK")) {
+    return {
+      kind: "refuse",
+      reason: `「${dragData.title}」是长期任务，只能在同一个学生里改期`,
+    };
   }
   return {
-    taskId: dragData.taskId,
-    version: dragData.version,
-    targetDate: dropData.targetDate,
-    targetStudentId: dropData.targetStudentId,
+    kind: "reschedule",
+    input: {
+      taskId: dragData.taskId,
+      version: dragData.version,
+      targetDate: dropData.targetDate,
+      targetStudentId: dropData.targetStudentId,
+    },
   };
 }

@@ -1,9 +1,9 @@
 import { LoadingOutlined } from "@ant-design/icons";
 import { Alert, AutoComplete, Space } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import { ApiError } from "../../lib/api/ApiError";
+import { useEffect, useRef, useState } from "react";
 import { MountTrackModal } from "../planning/MountTrackModal";
+import { useSeriesSuggestion } from "../tasks/useSeriesSuggestion";
 import { listTemplates, type TaskTemplate } from "../templates/templateApi";
 import { createAdHocTask } from "./taskApi";
 
@@ -29,9 +29,11 @@ export function InlineTaskComposer({
   onCreated,
 }: InlineTaskComposerProps) {
   const queryClient = useQueryClient();
+  const { offerSeriesSuggestion } = useSeriesSuggestion();
   const [value, setValue] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [mountTemplate, setMountTemplate] = useState<TaskTemplate | null>(null);
+  const submissionRef = useRef(false);
 
   // Debounced template search. Empty query returns nothing to avoid noise.
   const [searchQuery, setSearchQuery] = useState("");
@@ -61,15 +63,15 @@ export function InlineTaskComposer({
         queryKey: ["today", scheduledDate],
       });
       await onCreated?.();
+      await offerSeriesSuggestion(studentId);
     },
     onError: (error: unknown) => {
       const message =
-        error instanceof ApiError
-          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-          : error instanceof Error
-            ? error.message
-            : "创建临时任务失败";
+        error instanceof Error ? error.message : "创建临时任务失败";
       setErrorMessage(message);
+    },
+    onSettled: () => {
+      submissionRef.current = false;
     },
   });
 
@@ -87,7 +89,7 @@ export function InlineTaskComposer({
     if (template.currentPublishedVersionId) {
       options.push({
         value: `__template__:${template.id}`,
-        label: `挂载模板：${template.name}（${template.templateCode}）`,
+        label: `安排课程：${template.name}`,
         kind: "template",
         template,
       });
@@ -96,36 +98,42 @@ export function InlineTaskComposer({
 
   const submitAdHoc = (title: string) => {
     const trimmed = title.trim();
-    if (!trimmed || saving) {
+    if (!trimmed || submissionRef.current) {
       return;
     }
+    submissionRef.current = true;
+    setErrorMessage(null);
     createMutation.mutate(trimmed);
   };
 
   return (
-    <Space direction="vertical" style={{ width: "100%" }} size="small">
+    <Space orientation="vertical" style={{ width: "100%" }} size="small">
       <AutoComplete
         style={{ width: "100%" }}
-        aria-label={
-          studentName ? `为 ${studentName} 新增任务` : "新增临时任务或挂载模板"
-        }
+        aria-label={studentName ? `为 ${studentName} 新增任务` : "新增任务"}
         value={value}
         options={options}
-        placeholder="输入临时任务回车创建，或搜索模板挂载"
-        onChange={(next) => {
+        placeholder="任务标题或课程名称"
+        defaultActiveFirstOption={false}
+        onChange={(next, option) => {
+          if (
+            submissionRef.current ||
+            (!Array.isArray(option) && option?.kind)
+          ) {
+            return;
+          }
           setValue(next);
           if (errorMessage) {
             setErrorMessage(null);
           }
         }}
         onSelect={(selected, option) => {
+          if (submissionRef.current) return;
           if (option.kind === "template" && option.template) {
             setMountTemplate(option.template);
             setValue("");
           } else if (option.kind === "ad-hoc") {
-            const idx = selected.indexOf(":");
-            submitAdHoc(idx >= 0 ? selected.slice(idx + 1) : value);
-            setValue("");
+            submitAdHoc(selected.slice("__adhoc__:".length));
           }
         }}
         filterOption={false}
@@ -133,10 +141,20 @@ export function InlineTaskComposer({
         disabled={saving}
         prefix={saving ? <LoadingOutlined /> : undefined}
         onKeyDown={(e) => {
-          if (e.key === "Enter") {
+          if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+            const activeId = (e.target as HTMLElement).getAttribute(
+              "aria-activedescendant",
+            );
+            if (
+              activeId &&
+              document.getElementById(activeId)?.getAttribute("role") ===
+                "option"
+            ) {
+              return;
+            }
             // Enter with no highlighted option -> create ad-hoc task.
+            e.preventDefault();
             submitAdHoc(value);
-            setValue("");
           }
         }}
       />
@@ -149,11 +167,15 @@ export function InlineTaskComposer({
           onClose={() => setErrorMessage(null)}
         />
       ) : null}
-      <MountTrackModal
-        studentId={studentId}
-        open={mountTemplate !== null}
-        onClose={() => setMountTemplate(null)}
-      />
+      {mountTemplate ? (
+        <MountTrackModal
+          studentId={studentId}
+          initialTemplateId={mountTemplate.id}
+          anchorDate={scheduledDate}
+          open
+          onClose={() => setMountTemplate(null)}
+        />
+      ) : null}
     </Space>
   );
 }

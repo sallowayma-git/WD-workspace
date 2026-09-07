@@ -26,7 +26,8 @@ import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import type { TableColumnsType } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
+import { z } from "zod";
 import { ApiError } from "../../lib/api/ApiError";
 import { StudentTaskMatrixShell } from "../../vendor/flowclass/matrix/StudentTaskMatrixShell";
 import { TaskCard } from "../tasks/TaskCard";
@@ -35,12 +36,11 @@ import {
   type TaskDetailTarget,
 } from "../tasks/TaskDetailDrawer";
 import { invalidateTaskViews, taskActions } from "../tasks/taskActions";
+import { useSeriesSuggestion } from "../tasks/useSeriesSuggestion";
 import {
   createNextSeriesTask,
-  createSubTask,
   deleteTask,
   duplicateTask,
-  linkMainTask,
   updateTask,
   type Priority,
   type TaskLike,
@@ -56,7 +56,7 @@ import {
   type WorkbenchTask,
 } from "./workbenchApi";
 import {
-  getWorkbenchRescheduleInput,
+  resolveWorkbenchDrop,
   type WorkbenchDragData,
   type WorkbenchDropData,
 } from "./workbenchDrag";
@@ -86,7 +86,7 @@ const dayNames = ["日", "一", "二", "三", "四", "五", "六"];
 function toTaskLike(task: WorkbenchTask): TaskLike {
   return {
     id: task.id,
-    title: task.shortTitle ?? task.title ?? "未命名",
+    title: task.title ?? task.shortTitle ?? "未命名",
     shortTitle: task.shortTitle ?? task.title ?? null,
     status: task.status,
     sourceType: task.sourceType ?? "AD_HOC",
@@ -108,10 +108,26 @@ function toTaskLike(task: WorkbenchTask): TaskLike {
 export function StudentWorkbenchPage() {
   // Workbench ranges are anchored to the local machine's work date.
   const today = useBusinessDate();
-  const [weekStart, setWeekStart] = useState(getWeekStart(today));
+  const [searchParams, setSearchParams] = useSearchParams();
+  const weekStart = getWeekStart(
+    z.iso.date().safeParse(searchParams.get("week") ?? searchParams.get("date"))
+      .data ?? today,
+  );
+  const setWeekStart = (week: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("week", week);
+    setSearchParams(next, { replace: true });
+  };
   // P2-WBK-007: 紧凑/扩展密度切换(会话内持久化)。
   const [density, setDensity] = useState<Density>("compact");
-  const [studentQuery, setStudentQuery] = useState("");
+  const studentQuery = searchParams.get("search") ?? "";
+  const setStudentQuery = (search: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("week", weekStart);
+    if (search) next.set("search", search);
+    else next.delete("search");
+    setSearchParams(next, { replace: true });
+  };
   const [activeComposer, setActiveComposer] = useState<{
     studentId: string;
     date: string;
@@ -125,6 +141,7 @@ export function StudentWorkbenchPage() {
   const densityConfig = DENSITY_CONFIG[density];
   const queryClient = useQueryClient();
   const { message } = App.useApp();
+  const { offerSeriesSuggestion } = useSeriesSuggestion();
 
   // D-1: without an explicit pointer activation constraint, PointerSensor
   // activates on pointerdown and swallows the subsequent click at the document
@@ -218,6 +235,10 @@ export function StudentWorkbenchPage() {
           : "完成任务失败，请稍后重试",
       );
     },
+    onSuccess: (result) => {
+      // 任务已完成，只是轨道没接上下一项：警告而不是报错。
+      if (result.chainWarning) void message.warning(result.chainWarning);
+    },
     onSettled: invalidate,
   });
 
@@ -283,20 +304,21 @@ export function StudentWorkbenchPage() {
     onSettled: invalidate,
   });
 
-  // 系列推进：右键“生成下一项”创建“序号+1、排到下一天”的新任务。
+  // 系列推进：右键“继续这个系列”创建“序号+1、排到下一个可学习日”的新任务。
   const createNextSeriesMutation = useMutation({
     mutationFn: (task: TaskLike) =>
       createNextSeriesTask(task.id, { expectedVersion: task.version }),
-    onSuccess: (created) => {
+    onSuccess: async (created) => {
       void message.success(
-        `已生成「${created.titleSnapshot}」，排在 ${created.scheduledDate ?? "下一天"}`,
+        `已生成「${created.titleSnapshot}」，排在 ${created.scheduledDate ?? "下一个可学习日"}`,
       );
+      await offerSeriesSuggestion(created.studentId);
     },
     onError: (error) => {
       void message.error(
         error instanceof ApiError
           ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-          : "生成下一项失败，请稍后重试",
+          : "接排下一项失败，请稍后重试",
       );
     },
     onSettled: invalidate,
@@ -317,38 +339,6 @@ export function StudentWorkbenchPage() {
         error instanceof ApiError
           ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
           : "设为长期任务失败，请稍后重试",
-      );
-    },
-    onSettled: invalidate,
-  });
-
-  const createSubTaskMutation = useMutation({
-    mutationFn: (params: { task: TaskLike; title: string }) =>
-      createSubTask(params.task.id, { title: params.title }),
-    onSuccess: () => void message.success("已添加子任务"),
-    onError: (error) => {
-      void message.error(
-        error instanceof ApiError
-          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-          : "添加子任务失败，请稍后重试",
-      );
-    },
-    onSettled: invalidate,
-  });
-
-  const linkMainTaskMutation = useMutation({
-    mutationFn: (params: { task: TaskLike; linkedParentTaskId: string }) =>
-      linkMainTask(
-        params.task.id,
-        params.task.version,
-        params.linkedParentTaskId,
-      ),
-    onSuccess: () => void message.success("已关联主任务"),
-    onError: (error) => {
-      void message.error(
-        error instanceof ApiError
-          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-          : "关联主任务失败，请稍后重试",
       );
     },
     onSettled: invalidate,
@@ -491,8 +481,9 @@ export function StudentWorkbenchPage() {
   });
 
   const handleWorkbenchDragEnd = (event: DragEndEvent) => {
-    const input = getWorkbenchRescheduleInput(event);
-    if (input) rescheduleMutation.mutate(input);
+    const outcome = resolveWorkbenchDrop(event);
+    if (outcome.kind === "reschedule") rescheduleMutation.mutate(outcome.input);
+    else if (outcome.kind === "refuse") void message.warning(outcome.reason);
   };
 
   const shiftWeek = (days: number) => {
@@ -585,7 +576,7 @@ export function StudentWorkbenchPage() {
               生词本({row.vocabularyCountThisWeek})
             </Link>
             <Link
-              to={`/students/${row.id}/schedule`}
+              to={`/students/${row.id}/schedule?${new URLSearchParams({ date: weekStart })}`}
               aria-label={`${row.name} 排期`}
             >
               排期
@@ -666,14 +657,14 @@ export function StudentWorkbenchPage() {
                   >
                     <TaskCard
                       task={taskLike}
-                      density={density}
+                      density="compact"
                       onComplete={(t) => completeMutation.mutate(t)}
                       onReopen={(t) => reopenMutation.mutate(t)}
                       onReschedule={() => invalidate()}
                       onCarryForward={(t) => carryForwardMutation.mutate(t)}
                       onDelete={(t) => deleteTaskMutation.mutate(t)}
                       onDuplicate={(t) => duplicateTaskMutation.mutate(t)}
-                      // 仅手工/导入的编号任务提供“生成下一项”；TRACK 任务的
+                      // 仅手工/导入的编号任务提供“继续这个系列”；TRACK 任务的
                       // 下一项由轨道完成时自动推进。
                       onCreateNext={
                         taskLike.sourceType !== "TRACK" &&
@@ -688,22 +679,17 @@ export function StudentWorkbenchPage() {
                           ? (t) => convertToLongTaskMutation.mutate(t)
                           : undefined
                       }
-                      onAddSubTask={(t, title) =>
-                        createSubTaskMutation.mutate({ task: t, title })
-                      }
-                      onLinkParent={(t, linkedParentTaskId) =>
-                        linkMainTaskMutation.mutate({
-                          task: t,
-                          linkedParentTaskId,
-                        })
-                      }
                       onViewDetail={() =>
                         // taskLike fills the required TaskLike fields the raw
                         // WorkbenchTask leaves nullable (title/sourceType);
                         // trackId is the one detail field WorkbenchTask
                         // carries beyond the TaskCard projection.
                         setDetailTarget({
-                          task: { ...taskLike, trackId: task.trackId ?? null },
+                          task: {
+                            ...taskLike,
+                            trackId: task.trackId ?? null,
+                            note: task.note,
+                          },
                           studentName: row.name,
                         })
                       }

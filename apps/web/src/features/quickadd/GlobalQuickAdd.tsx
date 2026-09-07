@@ -3,6 +3,7 @@ import { App, Button, Tag } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invalidateTaskViews } from "../tasks/taskActions";
+import { useSeriesSuggestion } from "../tasks/useSeriesSuggestion";
 import { listStudents } from "../students/studentApi";
 import { createAdHocTask } from "../today/taskApi";
 import { useBusinessDate } from "../foundation/useBusinessDate";
@@ -36,6 +37,7 @@ export function GlobalQuickAdd() {
   const anchorRef = useRef<HTMLSpanElement>(null);
   const queryClient = useQueryClient();
   const { message } = App.useApp();
+  const { offerSeriesSuggestion } = useSeriesSuggestion();
   const today = useBusinessDate();
 
   const studentsQuery = useQuery({
@@ -92,6 +94,7 @@ export function GlobalQuickAdd() {
       reset();
       await invalidateTaskViews(queryClient);
       inputRef.current?.focus();
+      await offerSeriesSuggestion(params.studentId);
     },
     onError: (error) => {
       void message.error(

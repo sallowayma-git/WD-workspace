@@ -2,6 +2,7 @@ export interface DataAdapter {
   getToday(date?: string): Promise<unknown>;
   getTodayCarryovers(targetDate: string): Promise<unknown>;
   triggerDayClose(businessDate: string): Promise<unknown>;
+  reconcileStartup(businessDate: string): Promise<unknown>;
   getWorkbench(from?: string, to?: string): Promise<unknown>;
   getSchedule(
     studentId: string,
@@ -45,10 +46,6 @@ export interface DataAdapter {
   listStudentTracks(studentId: string, status?: string): Promise<unknown>;
   getTrack(trackId: string): Promise<unknown>;
   mountTrack(input: Record<string, unknown>): Promise<unknown>;
-  scheduleTrackItems(
-    trackId: string,
-    input: Record<string, unknown>,
-  ): Promise<unknown>;
 
   listLongTasks(query?: string): Promise<unknown>;
   createLongTask(input: Record<string, unknown>): Promise<unknown>;
@@ -57,6 +54,15 @@ export interface DataAdapter {
     taskId: string,
     input: Record<string, unknown>,
   ): Promise<unknown>;
+  resumeSequenceTrack(
+    trackId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown>;
+  listSeriesSuggestions(studentId: string): Promise<unknown>;
+  dismissSeriesSuggestion(
+    studentId: string,
+    input: Record<string, unknown>,
+  ): Promise<void>;
 
   createAdHocTask(input: Record<string, unknown>): Promise<unknown>;
   carryForwardTask(input: Record<string, unknown>): Promise<unknown>;

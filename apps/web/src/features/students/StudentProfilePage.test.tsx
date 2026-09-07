@@ -20,7 +20,6 @@ const studentView = {
   classType: null,
   enrollmentDate: null,
   defaultDevicePolicy: "CONFIRM",
-  primaryAssistantId: null,
   note: null,
   tags: [],
   subjectPreferences: [],

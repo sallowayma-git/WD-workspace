@@ -162,6 +162,13 @@ export function rescheduleTask(input: {
 
   const targetStudentId = input.targetStudentId ?? task.studentId;
   const crossStudent = targetStudentId !== task.studentId;
+  // 轨道属于原学生：换人只能在新学生身上另起长期任务，不能把这条实例搬过去。
+  if (crossStudent && task.trackId) {
+    throw new TaskTransitionError(
+      "TRACK_TASK_CROSS_STUDENT",
+      "长期任务不能移动到其他学生",
+    );
+  }
 
   const availability = resolveStudyAvailability(calendar, targetDate);
   const reasons: string[] = [];
@@ -205,13 +212,19 @@ function resolveCarryForwardTarget(input: {
   source: TaskInstanceSnapshot;
   calendar: AvailabilityCalendar;
   targetDate?: string | null;
+  notBeforeDate?: string | null;
   horizonDays?: number;
 }): { targetDate: string; availability: EffectiveStudyAvailability } | null {
+  // 补日结时源日期可能已经过去好几天，从业务日往后找才不会又落进过去。
+  const afterDate =
+    input.notBeforeDate && input.notBeforeDate > input.source.scheduledDate
+      ? input.notBeforeDate
+      : input.source.scheduledDate;
   const targetDate =
     input.targetDate ??
     findNextAvailableStudyDate({
       calendar: input.calendar,
-      afterDate: input.source.scheduledDate,
+      afterDate,
       requiresDevice: input.source.requiresDevice,
       horizonDays: input.horizonDays ?? 90,
     });
@@ -253,6 +266,7 @@ export function carryForwardTask(input: {
   newTaskId: string;
   calendar: AvailabilityCalendar;
   targetDate?: string;
+  notBeforeDate?: string;
   reason?: string;
   existingTarget?: TaskInstanceSnapshot;
 }): {

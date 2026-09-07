@@ -2,6 +2,7 @@ import initSqlJs, { type Database, type SqlValue } from "sql.js";
 import sqlWasmUrl from "sql.js/dist/sql-wasm.wasm?url";
 import migrationCoreSql from "../../../../desktop/src-tauri/migrations/0001_local_core.sql?raw";
 import migrationSequenceLongTaskSql from "../../../../desktop/src-tauri/migrations/0002_sequence_long_task.sql?raw";
+import migrationSequenceInvariantsSql from "../../../../desktop/src-tauri/migrations/0003_sequence_invariants.sql?raw";
 import type {
   LocalQueryResult,
   LocalSqlStatement,
@@ -30,6 +31,7 @@ async function createDatabase(): Promise<Database> {
   const database = new sqlite.Database();
   database.exec(migrationCoreSql);
   database.exec(migrationSequenceLongTaskSql);
+  database.exec(migrationSequenceInvariantsSql);
   return database;
 }
 

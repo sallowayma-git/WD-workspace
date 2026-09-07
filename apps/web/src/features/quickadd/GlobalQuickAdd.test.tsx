@@ -20,7 +20,6 @@ function studentView(id: string, name: string, studentCode: string) {
     classType: null,
     enrollmentDate: null,
     defaultDevicePolicy: "CONFIRM",
-    primaryAssistantId: null,
     note: null,
     tags: [],
     subjectPreferences: [],

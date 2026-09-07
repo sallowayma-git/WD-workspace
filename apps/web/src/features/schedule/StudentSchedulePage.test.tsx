@@ -326,7 +326,7 @@ describe("StudentSchedulePage calendar acceptance", () => {
       name: "任务 上周未完成",
     });
     expect(source).toBeDisabled();
-    expect(screen.getByText("顺延")).toBeVisible();
+    expect(screen.getByRole("img", { name: "顺延记录" })).toBeVisible();
     expect(screen.getByRole("checkbox", { name: "任务 密卷08" })).toBeEnabled();
   });
 
@@ -398,7 +398,7 @@ describe("StudentSchedulePage calendar acceptance", () => {
       // 角色定位输入框。
       const composer = async () =>
         await screen.findByRole("combobox", {
-          name: "新增临时任务或挂载模板",
+          name: "新增任务",
         });
 
       // 周视图（默认）：每个日期格子的加号打开输入框，回车即创建当天任务。
@@ -464,10 +464,11 @@ describe("StudentSchedulePage calendar acceptance", () => {
     },
   );
 
-  // 用户反馈：完成“一天一句长难句day1”后点 → 箭头，下一天要出现 day2。
-  // 带尾号的任务在排期页把箭头从“改期到下一天”切换为“生成下一项”。
+  // 用户反馈：完成“一天一句长难句day1”后点 → 箭头，下一个可学习日要出现 day2。
+  // 带尾号的任务在排期页把箭头从“改期到下一天”切换为“继续这个系列”（和右键
+  // 菜单同名同语义：序号 +1、落到下一个可学习日）。
   it(
-    "swaps the arrow to 生成下一项 for numbered series tasks and calls the adapter",
+    "swaps the arrow to 继续这个系列 for numbered series tasks and calls the adapter",
     { timeout: 30000 },
     async () => {
       const user = userEvent.setup({ delay: null });
@@ -497,9 +498,9 @@ describe("StudentSchedulePage calendar acceptance", () => {
       renderPage(getSchedule, { createNextSeriesTask });
 
       expect(await screen.findByText("长难句day1")).toBeVisible();
-      // 尾号任务不再显示“改期到下一天”，而是“生成下一项”。
+      // 尾号任务不再显示“改期到下一天”，而是“继续这个系列”。
       expect(screen.queryByRole("button", { name: "改期到下一天" })).toBeNull();
-      await user.click(screen.getByRole("button", { name: "生成下一项" }));
+      await user.click(screen.getByRole("button", { name: "继续这个系列" }));
       await waitFor(() =>
         expect(createNextSeriesTask).toHaveBeenCalledWith(
           TASK,
@@ -522,12 +523,12 @@ describe("StudentSchedulePage calendar acceptance", () => {
       expect(
         screen.getByRole("button", { name: "改期到下一天" }),
       ).toBeVisible();
-      expect(screen.queryByRole("button", { name: "生成下一项" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "继续这个系列" })).toBeNull();
     },
   );
 
   // TRACK 任务的“下一项”由轨道在完成时自动推进，箭头保持“改期到下一天”，
-  // 不提供“生成下一项”，避免同一系列出现两条平行任务。
+  // 不提供“继续这个系列”，避免同一系列出现两条平行任务。
   it(
     "keeps the move arrow for numbered TRACK tasks whose next item the track owns",
     { timeout: 30000 },
@@ -553,7 +554,7 @@ describe("StudentSchedulePage calendar acceptance", () => {
       expect(
         screen.getByRole("button", { name: "改期到下一天" }),
       ).toBeVisible();
-      expect(screen.queryByRole("button", { name: "生成下一项" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "继续这个系列" })).toBeNull();
     },
   );
 });

@@ -35,7 +35,6 @@ const studentSchema = z.object({
   classType: z.string().nullable(),
   enrollmentDate: z.string().nullable(),
   defaultDevicePolicy: z.enum(["ALLOWED", "NOT_ALLOWED", "CONFIRM"]),
-  primaryAssistantId: z.string().uuid().nullable(),
   note: z.string().nullable(),
   tags: z.array(studentTagSchema),
   subjectPreferences: z.array(subjectPreferenceSchema),
@@ -78,7 +77,6 @@ export function updateStudent(
     alias: string | null;
     status: Student["status"];
     defaultDevicePolicy: Student["defaultDevicePolicy"];
-    primaryAssistantId: string | null;
     classType: string | null;
     enrollmentDate: string | null;
     note: string | null;

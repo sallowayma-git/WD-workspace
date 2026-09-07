@@ -6,6 +6,7 @@ import {
   Card,
   Col,
   Empty,
+  Modal,
   Row,
   Skeleton,
   Space,
@@ -17,7 +18,8 @@ import {
 } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
+import { z } from "zod";
 import { ApiError } from "../../lib/api/ApiError";
 import { TaskCard } from "../tasks/TaskCard";
 import {
@@ -25,12 +27,11 @@ import {
   type TaskDetailTarget,
 } from "../tasks/TaskDetailDrawer";
 import { invalidateTaskViews, taskActions } from "../tasks/taskActions";
+import { useSeriesSuggestion } from "../tasks/useSeriesSuggestion";
 import {
   createNextSeriesTask,
-  createSubTask,
   deleteTask,
   duplicateTask,
-  linkMainTask,
   updateTask,
   type Priority,
   type TaskLike,
@@ -110,9 +111,17 @@ function sortBySortOrder(tasks: TodayTask[]): TodayTask[] {
 export function TodayPage() {
   const queryClient = useQueryClient();
   const { message } = App.useApp();
+  const { offerSeriesSuggestion } = useSeriesSuggestion();
   // The desktop adapter owns the local work date used across all views.
   const businessDate = useBusinessDate();
-  const [selectedDate, setSelectedDate] = useState(businessDate);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedDate =
+    z.iso.date().safeParse(searchParams.get("date")).data ?? businessDate;
+  const setSelectedDate = (date: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("date", date);
+    setSearchParams(next, { replace: true });
+  };
 
   const todayQuery = useQuery({
     queryKey: ["today", selectedDate],
@@ -121,6 +130,7 @@ export function TodayPage() {
   });
 
   const [carryoverOpen, setCarryoverOpen] = useState(false);
+  const [blockedOpen, setBlockedOpen] = useState(false);
   // MAJOR-5: the read-only detail drawer target; fed straight from the task
   // object the list already holds, so no extra query is needed.
   const [detailTarget, setDetailTarget] = useState<TaskDetailTarget | null>(
@@ -168,6 +178,10 @@ export function TodayPage() {
       if (context?.snapshot) {
         queryClient.setQueryData(["today", selectedDate], context.snapshot);
       }
+    },
+    onSuccess: (result) => {
+      // 任务已完成，只是轨道没接上下一项：警告而不是报错。
+      if (result.chainWarning) void message.warning(result.chainWarning);
     },
     onSettled: () => {
       void invalidateTaskViews(queryClient);
@@ -303,22 +317,23 @@ export function TodayPage() {
     },
   });
 
-  // 系列推进（用户反馈）：打勾 day1 后点箭头，下一天出现 day2；序号由本地
-  // 适配器按同前缀最大值 +1 接续，当天已有 day1~day3 时逐行点箭头得到
+  // 系列推进（用户反馈）：打勾 day1 后点箭头，下一个可学习日出现 day2；序号
+  // 由本地适配器按同前缀最大值 +1 接续，当天已有 day1~day3 时逐行点箭头得到
   // day4~day6。返回新任务视图用于 toast 预览。
   const createNextSeriesMutation = useMutation({
     mutationFn: (task: TaskLike) =>
       createNextSeriesTask(task.id, { expectedVersion: task.version }),
-    onSuccess: (created) => {
+    onSuccess: async (created) => {
       void message.success(
-        `已生成「${created.titleSnapshot}」，排在 ${created.scheduledDate ?? "下一天"}`,
+        `已生成「${created.titleSnapshot}」，排在 ${created.scheduledDate ?? "下一个可学习日"}`,
       );
+      await offerSeriesSuggestion(created.studentId);
     },
     onError: (error) => {
       void message.error(
         error instanceof ApiError
           ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-          : "生成下一项失败，请稍后重试",
+          : "接排下一项失败，请稍后重试",
       );
     },
     onSettled: () => {
@@ -341,46 +356,6 @@ export function TodayPage() {
         error instanceof ApiError
           ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
           : "设为长期任务失败，请稍后重试",
-      );
-    },
-    onSettled: () => {
-      void invalidateTaskViews(queryClient);
-    },
-  });
-
-  const createSubTaskMutation = useMutation({
-    mutationFn: (params: { task: TaskLike; title: string }) =>
-      createSubTask(params.task.id, { title: params.title }),
-    onSuccess: () => {
-      void message.success("已添加子任务");
-    },
-    onError: (error) => {
-      void message.error(
-        error instanceof ApiError
-          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-          : "添加子任务失败，请稍后重试",
-      );
-    },
-    onSettled: () => {
-      void invalidateTaskViews(queryClient);
-    },
-  });
-
-  const linkMainTaskMutation = useMutation({
-    mutationFn: (params: { task: TaskLike; linkedParentTaskId: string }) =>
-      linkMainTask(
-        params.task.id,
-        params.task.version,
-        params.linkedParentTaskId,
-      ),
-    onSuccess: () => {
-      void message.success("已关联主任务");
-    },
-    onError: (error) => {
-      void message.error(
-        error instanceof ApiError
-          ? `${error.message}${error.requestId ? `（requestId: ${error.requestId}）` : ""}`
-          : "关联主任务失败，请稍后重试",
       );
     },
     onSettled: () => {
@@ -510,6 +485,18 @@ export function TodayPage() {
   const data = todayQuery.data;
   const dateObj = new Date(selectedDate);
   const dayName = dayNames[dateObj.getDay()];
+  // 阻塞任务散在各学生卡片里，数字旁给一份汇总，省得逐个卡片翻。
+  const blockedTasks = data.students.flatMap((group) =>
+    group.tasks
+      .filter((task) => task.status === "BLOCKED")
+      .map((task) => ({
+        id: task.id,
+        title: task.shortTitle ?? task.title,
+        studentId: group.studentId,
+        studentName: group.studentName,
+        scheduledDate: task.scheduledDate,
+      })),
+  );
 
   return (
     <Spin
@@ -519,8 +506,6 @@ export function TodayPage() {
         undoCarryoverMutation.isPending ||
         deleteTaskMutation.isPending ||
         duplicateTaskMutation.isPending ||
-        createSubTaskMutation.isPending ||
-        linkMainTaskMutation.isPending ||
         updateTaskMutation.isPending
       }
     >
@@ -575,6 +560,17 @@ export function TodayPage() {
               valueStyle={{
                 color: data.metrics.blockedTasks > 0 ? "#ff4d4f" : undefined,
               }}
+              suffix={
+                blockedTasks.length > 0 ? (
+                  <Button
+                    type="link"
+                    size="small"
+                    onClick={() => setBlockedOpen(true)}
+                  >
+                    明细
+                  </Button>
+                ) : null
+              }
             />
             <Statistic
               title="冲突"
@@ -657,7 +653,9 @@ export function TodayPage() {
                       <Link to={`/students/${group.studentId}/vocabulary`}>
                         生词本
                       </Link>
-                      <Link to={`/students/${group.studentId}/schedule`}>
+                      <Link
+                        to={`/students/${group.studentId}/schedule?${new URLSearchParams({ date: selectedDate })}`}
+                      >
                         排期
                       </Link>
                     </Space>
@@ -671,7 +669,8 @@ export function TodayPage() {
                         const taskLike = toTaskLike(task);
                         const isSubTask = Boolean(task.parentTaskId);
                         // 系列任务（手工/导入、标题带尾号）在行尾显示 → 箭头：
-                        // 完成打勾后点一下即生成“序号+1、排到下一天”的新任务。
+                        // 完成打勾后点一下即生成“序号+1、排到下一个可学习日”的
+                        // 新任务，和长期任务轨道同一条排期规则。
                         // TRACK 任务的下一项由轨道完成时自动推进，不在此重复。
                         const series =
                           taskLike.sourceType === "TRACK"
@@ -719,8 +718,8 @@ export function TodayPage() {
                                   <Button
                                     size="small"
                                     type="link"
-                                    aria-label={`生成下一项（${formatSeriesTitle(series, series.number + 1)}）`}
-                                    title="生成下一项并排到下一天，序号自动接续"
+                                    aria-label={`继续这个系列（${formatSeriesTitle(series, series.number + 1)}）`}
+                                    title="接排下一项：序号 +1，排到下一个可学习日"
                                     onClick={(e) => {
                                       e.preventDefault();
                                       e.stopPropagation();
@@ -738,21 +737,9 @@ export function TodayPage() {
                                   ? (t) => convertToLongTaskMutation.mutate(t)
                                   : undefined
                               }
-                              onAddSubTask={(t, title) =>
-                                createSubTaskMutation.mutate({
-                                  task: t,
-                                  title,
-                                })
-                              }
-                              onLinkParent={(t, linkedParentTaskId) =>
-                                linkMainTaskMutation.mutate({
-                                  task: t,
-                                  linkedParentTaskId,
-                                })
-                              }
-                              onViewDetail={(t) =>
+                              onViewDetail={() =>
                                 setDetailTarget({
-                                  task: t,
+                                  task: { ...taskLike, note: task.note },
                                   studentName: group.studentName,
                                 })
                               }
@@ -797,6 +784,42 @@ export function TodayPage() {
         target={detailTarget}
         onClose={() => setDetailTarget(null)}
       />
+      <Modal
+        title="阻塞任务"
+        open={blockedOpen}
+        onCancel={() => setBlockedOpen(false)}
+        footer={null}
+        destroyOnHidden
+      >
+        <Table
+          rowKey="id"
+          dataSource={blockedTasks}
+          pagination={false}
+          size="small"
+          columns={[
+            { title: "任务", dataIndex: "title", key: "title" },
+            { title: "学生", dataIndex: "studentName", key: "studentName" },
+            {
+              title: "原定",
+              dataIndex: "scheduledDate",
+              key: "scheduledDate",
+              render: (value: string | null) => value ?? "-",
+            },
+            {
+              title: "",
+              key: "action",
+              render: (_, row) => (
+                <Link
+                  to={`/students/${row.studentId}/schedule?${new URLSearchParams({ date: row.scheduledDate ?? selectedDate })}`}
+                  onClick={() => setBlockedOpen(false)}
+                >
+                  去改期
+                </Link>
+              ),
+            },
+          ]}
+        />
+      </Modal>
     </Spin>
   );
 }

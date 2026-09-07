@@ -1,0 +1,16 @@
+# Normalize every text file to LF inside the repository, regardless of each
+# developer's core.autocrlf setting. Without this, a Windows checkout can commit
+# CRLF blobs that make the Linux CI `format:check` fail on files that look clean
+# locally (and vice versa).
+#
+# The working tree keeps platform-native endings (git still applies autocrlf on
+# checkout); only the stored blob is normalized. Prettier is configured with
+# endOfLine: "auto" so it never fights that conversion.
+* text=auto
+*.sql text eol=lf
+
+# Binary assets: never touch.
+*.png binary
+*.ico binary
+*.icns binary
+*.wasm binary

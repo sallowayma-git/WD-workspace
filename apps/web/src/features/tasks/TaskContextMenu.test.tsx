@@ -14,8 +14,6 @@ function carryItem(
     onCarryForward,
     onReschedule: vi.fn(),
     onDuplicate: vi.fn(),
-    onAddSubTask: vi.fn(),
-    onLinkParent: vi.fn(),
     onViewDetail: vi.fn(),
     onDelete: vi.fn(),
   });
@@ -43,8 +41,6 @@ describe("TaskContextMenu createNext command", () => {
     canCarryForward: false,
     onReschedule: vi.fn(),
     onDuplicate: vi.fn(),
-    onAddSubTask: vi.fn(),
-    onLinkParent: vi.fn(),
     onViewDetail: vi.fn(),
     onDelete: vi.fn(),
   };
@@ -82,8 +78,6 @@ describe("TaskContextMenu convertToLongTask command", () => {
     canCarryForward: false,
     onReschedule: vi.fn(),
     onDuplicate: vi.fn(),
-    onAddSubTask: vi.fn(),
-    onLinkParent: vi.fn(),
     onViewDetail: vi.fn(),
     onDelete: vi.fn(),
   };
@@ -110,5 +104,67 @@ describe("TaskContextMenu convertToLongTask command", () => {
       (item.onClick as () => void)();
     }
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The menu is deliberately short. 子任务 and 关联主任务 are gone: the latter
+// asked the assistant to type a task UUID by hand, and no assistant should
+// ever see a UUID. The DB columns stay; the commands must not come back.
+describe("TaskContextMenu surface", () => {
+  const keys = new Set(
+    (
+      buildTaskMenuItems({
+        locked: false,
+        canCarryForward: true,
+        onCarryForward: vi.fn(),
+        onSetPriority: vi.fn(),
+        onReschedule: vi.fn(),
+        onDuplicate: vi.fn(),
+        onCreateNext: vi.fn(),
+        onConvertToLongTask: vi.fn(),
+        onViewDetail: vi.fn(),
+        onDelete: vi.fn(),
+      }) ?? []
+    ).flatMap((item) =>
+      item != null && "key" in item && typeof item.key === "string"
+        ? [item.key]
+        : [],
+    ),
+  );
+
+  it("offers exactly the commands an assistant needs", () => {
+    expect([...keys]).toEqual([
+      "priority",
+      "reschedule",
+      "carryForward",
+      "duplicate",
+      "createNext",
+      "convertToLongTask",
+      "viewDetail",
+      "delete",
+    ]);
+  });
+
+  it("never offers subtask or link-parent (they needed a hand-typed UUID)", () => {
+    expect(keys.has("addSubTask")).toBe(false);
+    expect(keys.has("linkParent")).toBe(false);
+  });
+
+  it("labels series continuation without template jargon", () => {
+    const item = (
+      buildTaskMenuItems({
+        locked: false,
+        canCarryForward: false,
+        onReschedule: vi.fn(),
+        onDuplicate: vi.fn(),
+        onCreateNext: vi.fn(),
+        onViewDetail: vi.fn(),
+        onDelete: vi.fn(),
+      }) ?? []
+    ).find(
+      (entry): entry is MenuItem =>
+        entry != null && "key" in entry && entry.key === "createNext",
+    );
+    expect(item).toMatchObject({ label: "继续这个系列" });
   });
 });

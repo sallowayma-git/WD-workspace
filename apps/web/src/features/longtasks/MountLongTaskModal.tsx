@@ -7,10 +7,11 @@ import {
   Typography,
 } from "antd";
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../../lib/api/ApiError";
 import { listLongTasks, mountLongTask, type LongTask } from "./longTaskApi";
-import { renderSeriesTitlePattern } from "../../domain/task/seriesTitle";
+import { trySeriesTitlePattern } from "../../domain/task/seriesTitle";
+import { invalidateTaskViews } from "../tasks/taskActions";
 
 interface MountLongTaskModalProps {
   studentId: string;
@@ -34,6 +35,7 @@ export function MountLongTaskModal({
 }: MountLongTaskModalProps) {
   const [form] = Form.useForm<{ longTaskId: string; currentOrdinal: number }>();
   const { message } = AntdApp.useApp();
+  const queryClient = useQueryClient();
   const [submitting, setSubmitting] = useState(false);
   const longTasksQuery = useQuery({
     queryKey: ["long-tasks"],
@@ -59,9 +61,10 @@ export function MountLongTaskModal({
   }, [open, longTasks, form]);
 
   // 序号变化时同步预览：今天这一项长什么样。
-  const preview =
-    selected != null && currentOrdinal != null
-      ? renderSeriesTitlePattern(selected.titlePattern, currentOrdinal)
+  const preview = trySeriesTitlePattern(selected?.titlePattern, currentOrdinal);
+  const lastPreview =
+    selected?.endOrdinal != null
+      ? trySeriesTitlePattern(selected.titlePattern, selected.endOrdinal)
       : null;
 
   async function handleSubmit(): Promise<void> {
@@ -74,11 +77,24 @@ export function MountLongTaskModal({
         currentOrdinal: values.currentOrdinal,
         anchorDate,
       });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["student-tracks", studentId],
+        }),
+        queryClient.invalidateQueries({ queryKey: ["long-tasks"] }),
+        invalidateTaskViews(queryClient),
+      ]);
+      // 模板快照缺失时不能让格式化把"挂载成功"抛成"挂载失败"，退化成序号文案。
+      const firstTitle = trySeriesTitlePattern(
+        track.titlePatternSnapshot,
+        track.currentOrdinal,
+      );
       void message.success(
-        `已挂载，第一项「${renderSeriesTitlePattern(
-          track.titlePatternSnapshot ?? "",
-          track.currentOrdinal,
-        )}」已排在 ${track.nextCandidateDate ?? anchorDate}`,
+        `已挂载，${
+          firstTitle
+            ? `第一项「${firstTitle}」`
+            : `第 ${track.currentOrdinal} 项`
+        }已排在 ${track.nextCandidateDate ?? anchorDate}`,
       );
       onMounted?.(track.id);
       onClose();
@@ -147,8 +163,8 @@ export function MountLongTaskModal({
           {selected && preview ? (
             <Typography.Text type="secondary">
               首项：{preview}
-              {selected.endOrdinal != null
-                ? ` · 最后一项：${renderSeriesTitlePattern(selected.titlePattern, selected.endOrdinal)}`
+              {lastPreview
+                ? ` · 最后一项：${lastPreview}`
                 : " · 之后完成一项自动接排下一项"}
             </Typography.Text>
           ) : null}

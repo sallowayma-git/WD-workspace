@@ -27,3 +27,6 @@ Thumbs.db
 # Local agent/session planning artifacts
 .planning/
 .workbuddy/
+/task_plan.md
+/findings.md
+/progress.md

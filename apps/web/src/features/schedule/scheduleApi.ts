@@ -38,6 +38,7 @@ const scheduleTaskSchema = taskViewSchema
       "CANCELLED",
     ]),
     ...taskCardContractFields,
+    note: taskViewSchema.shape.note.optional(),
   });
 
 const scheduleDaySchema = z.object({

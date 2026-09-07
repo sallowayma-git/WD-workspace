@@ -1,17 +1,22 @@
-import { Descriptions, Drawer, Space, Tag, Typography } from "antd";
+import { EditOutlined, SaveOutlined } from "@ant-design/icons";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  Alert,
+  Button,
+  Descriptions,
+  Drawer,
+  Form,
+  Input,
+  Space,
+  Tag,
+  Typography,
+} from "antd";
 import type { DescriptionsProps } from "antd";
-import type { ReactNode } from "react";
-import type { TaskLike } from "./taskApi";
+import { useState, type ReactNode } from "react";
+import { updateTask, type TaskLike } from "./taskApi";
+import { invalidateTaskViews } from "./taskActions";
+import { itemOrdinalLabel } from "./itemOrdinalLabel";
 
-/**
- * Read-only task detail drawer (audit 2026-08-27 §4 MAJOR-5 / INT-CAL-003).
- * Replaces the five former message.info detail placeholders in Today,
- * Schedule and Workbench. The drawer is fed entirely from the task object
- * the opening page already holds in its list — no extra query — so the
- * input is the shared TaskLike card contract plus the optional detail
- * fields below: a projection that lacks them simply renders "-" instead of
- * failing.
- */
 export interface TaskDetailExtras {
   trackId?: string | null;
   scheduleOrigin?: string | null;
@@ -69,27 +74,59 @@ export function TaskDetailDrawer({
     <Drawer
       open={task !== null}
       onClose={onClose}
-      title={task ? (task.shortTitle ?? task.title) : "任务详情"}
-      width={480}
+      title="任务详情"
+      size={480}
       destroyOnHidden
     >
       {task ? (
-        <TaskDetailBody task={task} studentName={target?.studentName ?? null} />
+        <TaskDetailBody
+          key={`${task.id}:${task.version}`}
+          initialTask={task}
+          studentName={target?.studentName ?? null}
+        />
       ) : null}
     </Drawer>
   );
 }
 
 function TaskDetailBody({
-  task,
+  initialTask,
   studentName,
 }: {
-  task: TaskLike & TaskDetailExtras;
+  initialTask: TaskLike & TaskDetailExtras;
   studentName: string | null;
 }) {
+  const queryClient = useQueryClient();
+  const [task, setTask] = useState(initialTask);
+  const [editing, setEditing] = useState(false);
+  const [form] = Form.useForm<{ title: string; note: string }>();
+  const saveMutation = useMutation({
+    mutationFn: (values: { title: string; note: string }) =>
+      updateTask(task.id, {
+        ...values,
+        title: values.title.trim(),
+        expectedVersion: task.version,
+      }),
+    onSuccess: async (saved) => {
+      setTask({
+        ...task,
+        title: saved.titleSnapshot ?? task.title,
+        shortTitle: saved.shortTitleSnapshot,
+        note: saved.note,
+        version: saved.version,
+      });
+      setEditing(false);
+      await invalidateTaskViews(queryClient);
+    },
+  });
   // A CARRIED_OVER source row is history (INT-CAL-008 / ACC-074): keep the
   // trail visible but say so at the top of the drawer in a weakened style.
   const history = task.carriedOver === true || task.status === "CARRIED_OVER";
+  const editable =
+    task.sourceType === "AD_HOC" &&
+    !task.locked &&
+    !history &&
+    task.status !== "CANCELLED";
   const hasLineage =
     history || task.carriedFromDate != null || task.carriedToInstanceId != null;
 
@@ -101,6 +138,7 @@ function TaskDetailBody({
   const originLabel = task.scheduleOrigin
     ? (scheduleOriginLabels[task.scheduleOrigin] ?? task.scheduleOrigin)
     : null;
+  const ordinalLabel = itemOrdinalLabel(task);
 
   const flags: ReactNode[] = [];
   const priority = task.priority ? priorityTags[task.priority] : undefined;
@@ -135,27 +173,9 @@ function TaskDetailBody({
       label: "来源",
       children: originLabel ? `${sourceLabel} · ${originLabel}` : sourceLabel,
     },
-    ...(task.trackId != null || task.itemOrdinal != null
-      ? [
-          {
-            key: "track",
-            label: "轨道",
-            children: (
-              <Space size="small" wrap>
-                <span>
-                  {task.itemOrdinal != null
-                    ? `轨道第 ${task.itemOrdinal} 项`
-                    : "轨道任务"}
-                </span>
-                {task.trackId ? (
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {task.trackId}
-                  </Typography.Text>
-                ) : null}
-              </Space>
-            ),
-          },
-        ]
+    // 序号沿用卡片那套判断：标题末尾数字已等于序号时（长期任务）不再重复一遍。
+    ...(ordinalLabel
+      ? [{ key: "track", label: "轨道", children: ordinalLabel }]
       : []),
     {
       key: "duration",
@@ -185,7 +205,6 @@ function TaskDetailBody({
           },
         ]
       : []),
-    { key: "version", label: "版本", children: String(task.version) },
     ...(task.completedAt
       ? [
           {
@@ -199,6 +218,64 @@ function TaskDetailBody({
 
   return (
     <>
+      {editing ? (
+        <Form
+          form={form}
+          layout="vertical"
+          disabled={saveMutation.isPending}
+          onFinish={(values) => saveMutation.mutate(values)}
+        >
+          <Form.Item
+            name="title"
+            label="标题"
+            rules={[
+              { required: true, whitespace: true, message: "请输入任务标题" },
+            ]}
+          >
+            <Input autoFocus />
+          </Form.Item>
+          <Form.Item name="note" label="备注">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+          {saveMutation.isError ? (
+            <Alert
+              type="error"
+              showIcon
+              message={saveMutation.error.message}
+              style={{ marginBottom: 12 }}
+            />
+          ) : null}
+          <Space style={{ marginBottom: 16 }}>
+            <Button
+              type="primary"
+              htmlType="submit"
+              icon={<SaveOutlined />}
+              loading={saveMutation.isPending}
+            >
+              保存
+            </Button>
+            <Button
+              onClick={() => setEditing(false)}
+              disabled={saveMutation.isPending}
+            >
+              取消
+            </Button>
+          </Space>
+        </Form>
+      ) : editable ? (
+        <Button
+          aria-label="编辑任务"
+          icon={<EditOutlined />}
+          style={{ marginBottom: 16 }}
+          onClick={() => {
+            form.setFieldsValue({ title: task.title, note: task.note ?? "" });
+            saveMutation.reset();
+            setEditing(true);
+          }}
+        >
+          编辑任务
+        </Button>
+      ) : null}
       {hasLineage ? (
         <div
           style={{
@@ -230,7 +307,21 @@ function TaskDetailBody({
           ) : null}
         </div>
       ) : null}
-      <Descriptions column={1} size="small" bordered items={items} />
+      <Descriptions
+        column={1}
+        size="small"
+        bordered
+        items={
+          editing
+            ? items.filter(
+                (item) =>
+                  item.key !== "title" &&
+                  item.key !== "shortTitle" &&
+                  item.key !== "note",
+              )
+            : items
+        }
+      />
     </>
   );
 }

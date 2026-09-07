@@ -117,43 +117,11 @@ export function createNextSeriesTask(
 }
 
 // ---------------------------------------------------------------------------
-// Subtask — create a child under a parent task.
-// Returns CreateSubTaskResult (not a TaskInstanceView), so callers invalidate
-// and refetch rather than parsing the response against taskSchema.
+// 子任务 / 关联主任务 曾经在这里各有一个封装。两个命令都从产品里删掉了：
+// 「关联主任务」要助教手输一个任务 UUID，助教永远不应该看到 UUID。
+// 数据库列（parent_task_id / linked_parent_task_id）和适配器方法保留——
+// 现有数据仍然引用它们，migration 不动；只是产品没有入口了。
 // ---------------------------------------------------------------------------
-
-export interface CreateSubTaskInput {
-  title: string;
-  scheduledDate?: string;
-  priority?: Priority;
-}
-
-export function createSubTask(
-  parentTaskId: string,
-  input: CreateSubTaskInput,
-): Promise<void> {
-  return getDataAdapter().createSubTask(parentTaskId, {
-    taskId: parentTaskId,
-    title: input.title,
-    scheduledDate: input.scheduledDate ?? null,
-    priority: input.priority ?? null,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Link — associate this task with a main/parent task. Returns the updated
-// TaskInstanceView, so it is parsed against taskSchema.
-// ---------------------------------------------------------------------------
-
-export function linkMainTask(
-  taskId: string,
-  expectedVersion: number,
-  linkedParentTaskId: string,
-): Promise<Task> {
-  return getDataAdapter()
-    .linkMainTask(taskId, { taskId, expectedVersion, linkedParentTaskId })
-    .then((value) => taskSchema.parse(value));
-}
 
 // ---------------------------------------------------------------------------
 // Physical delete — active tasks only. Local SQLite permits a PENDING carry

@@ -31,7 +31,11 @@ export interface EffectiveStudyAvailability {
 function parseDate(value: string): Date {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) throw new Error(`Invalid business date: ${value}`);
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const date = new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+  );
   // Round-trip guard: JS Date silently rolls over impossible calendar dates
   // (2026-02-31 → 2026-03-03), which would let a non-existent date flow into
   // carry-forward windows and produce lineage with incoherent dates.

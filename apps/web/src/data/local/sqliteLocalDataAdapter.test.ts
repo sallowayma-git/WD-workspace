@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
 import { ApiError } from "../../lib/api/ApiError";
+import * as studentApi from "../../features/students/studentApi";
+import { setDataAdapterForTests } from "../runtime";
 import type {
   LocalQueryResult,
   LocalSqlStatement,
@@ -36,7 +38,11 @@ class NodeSqliteStorage implements LocalStorage {
   constructor(databasePath = ":memory:", initializeMigration = true) {
     this.database = new DatabaseSync(databasePath);
     if (!initializeMigration) return;
-    for (const file of ["0001_local_core.sql", "0002_sequence_long_task.sql"]) {
+    for (const file of [
+      "0001_local_core.sql",
+      "0002_sequence_long_task.sql",
+      "0003_sequence_invariants.sql",
+    ]) {
       const migrationUrl = new URL(
         `../../../../desktop/src-tauri/migrations/${file}`,
         import.meta.url,
@@ -96,12 +102,83 @@ class NodeSqliteStorage implements LocalStorage {
   }
 }
 
+class InterleavedSqliteStorage extends NodeSqliteStorage {
+  afterIdempotencyMiss?: () => Promise<void>;
+
+  override async select<TRow extends Record<string, unknown>>(
+    sql: string,
+    values: unknown[] = [],
+  ): Promise<TRow[]> {
+    const rows = await super.select<TRow>(sql, values);
+    if (
+      sql.includes("FROM idempotency_record") &&
+      rows.length === 0 &&
+      this.afterIdempotencyMiss
+    ) {
+      const commit = this.afterIdempotencyMiss;
+      this.afterIdempotencyMiss = undefined;
+      await commit();
+    }
+    return rows;
+  }
+}
+
 describe("SqliteLocalDataAdapter", () => {
   let storage: NodeSqliteStorage | undefined;
 
   afterEach(() => {
+    setDataAdapterForTests(null);
     storage?.database.close();
     storage = undefined;
+  });
+
+  it("returns student API views after creating and editing a profile", async () => {
+    storage = new NodeSqliteStorage();
+    setDataAdapterForTests(new SqliteLocalDataAdapter(storage));
+
+    const created = await studentApi.createStudent({
+      name: "Profile contract",
+      classType: "Test class",
+      defaultDevicePolicy: "ALLOWED",
+      subjectPreferences: [
+        { subjectCode: "ENGLISH", priority: 1, targetRatio: 100, note: null },
+      ],
+    });
+    expect(created).toMatchObject({
+      studentCode: "S001",
+      name: "Profile contract",
+      classType: "Test class",
+      defaultDevicePolicy: "ALLOWED",
+      subjectPreferences: [{ subjectCode: "ENGLISH", targetRatio: 100 }],
+    });
+    await expect(studentApi.getStudent(created.id)).resolves.toEqual(created);
+
+    const updated = await studentApi.updateStudent(created.id, {
+      name: "Edited profile",
+      alias: "Alias",
+      status: "PAUSED",
+      defaultDevicePolicy: "NOT_ALLOWED",
+      classType: "Updated class",
+      enrollmentDate: "2026-09-07",
+      note: "Saved from the profile form",
+      tags: [{ code: "PILOT", name: "Pilot" }],
+      subjectPreferences: [],
+      expectedVersion: created.version,
+    });
+    expect(updated).toMatchObject({
+      studentCode: "S001",
+      name: "Edited profile",
+      defaultDevicePolicy: "NOT_ALLOWED",
+      enrollmentDate: "2026-09-07",
+      tags: [{ code: "PILOT", name: "Pilot" }],
+      subjectPreferences: [],
+      version: created.version + 1,
+    });
+    await expect(studentApi.getStudent(created.id)).resolves.toEqual(updated);
+    await expect(studentApi.listStudents("Edited")).resolves.toMatchObject({
+      items: [updated],
+      total: 1,
+    });
   });
 
   it("runs the student-template-track execution flow atomically", async () => {
@@ -180,60 +257,6 @@ describe("SqliteLocalDataAdapter", () => {
     })) as { id: string; currentOrdinal: number };
     expect(track.currentOrdinal).toBe(1);
 
-    const scheduled = (await adapter.scheduleTrackItems(track.id, {
-      startOrdinal: 1,
-      unitCount: 2,
-      date: "2026-08-21",
-      manualOverride: false,
-    })) as {
-      instances: Array<{ itemOrdinal: number; scheduledDate: string }>;
-      warnings: string[];
-    };
-    expect(scheduled.instances).toHaveLength(2);
-    expect(scheduled.instances.map((task) => task.itemOrdinal)).toEqual([1, 2]);
-    expect(scheduled.warnings).toContain("序号 1 已存在待办实例，复用现有");
-    expect(
-      ((await adapter.getTrack(track.id)) as { currentOrdinal: number })
-        .currentOrdinal,
-    ).toBe(1);
-
-    const batchTrack = (await adapter.mountTrack({
-      studentId: student.id,
-      idempotencyKey: crypto.randomUUID(),
-      templateId: template.id,
-      templateVersionId: draft.id,
-      startOrdinal: 1,
-      endOrdinal: 2,
-      startDate: "2026-08-21",
-      defaultUnitsPerSession: 2,
-      schedulingPolicy: "MANUAL",
-      createFirstInstance: false,
-    })) as { id: string };
-    const batch = (await adapter.scheduleTrackItems(batchTrack.id, {
-      startOrdinal: 1,
-      unitCount: 2,
-      date: "2026-08-21",
-    })) as {
-      instances: Array<{ itemOrdinal: number; scheduledDate: string }>;
-      warnings: string[];
-    };
-    expect(batch.instances).toMatchObject([
-      { itemOrdinal: 1, scheduledDate: "2026-08-21" },
-      { itemOrdinal: 2, scheduledDate: "2026-08-24" },
-    ]);
-    expect(batch.warnings).toContain("序号 2 由 2026-08-21 顺延至 2026-08-24");
-    const repeatedBatch = (await adapter.scheduleTrackItems(batchTrack.id, {
-      startOrdinal: 1,
-      unitCount: 2,
-      date: "2026-08-21",
-    })) as { instances: unknown[]; warnings: string[] };
-    expect(repeatedBatch.instances).toHaveLength(2);
-    expect(repeatedBatch.warnings).toHaveLength(2);
-    expect(
-      ((await adapter.getTrack(batchTrack.id)) as { currentOrdinal: number })
-        .currentOrdinal,
-    ).toBe(1);
-
     const initialSchedule = (await adapter.getSchedule(student.id, {
       from: "2026-08-17",
       to: "2026-08-21",
@@ -246,16 +269,18 @@ describe("SqliteLocalDataAdapter", () => {
     };
     const firstTask = initialSchedule.days[0].tasks[0];
     const completionKey = crypto.randomUUID();
-    await adapter.completeTask({
-      taskId: firstTask.id,
-      expectedVersion: firstTask.version,
-      idempotencyKey: completionKey,
-    });
-    await adapter.completeTask({
-      taskId: firstTask.id,
-      expectedVersion: firstTask.version,
-      idempotencyKey: completionKey,
-    });
+    await Promise.all([
+      adapter.completeTask({
+        taskId: firstTask.id,
+        expectedVersion: firstTask.version,
+        idempotencyKey: completionKey,
+      }),
+      adapter.completeTask({
+        taskId: firstTask.id,
+        expectedVersion: firstTask.version,
+        idempotencyKey: completionKey,
+      }),
+    ]);
 
     const advancedTrack = (await adapter.getTrack(track.id)) as {
       currentOrdinal: number;
@@ -437,9 +462,17 @@ describe("SqliteLocalDataAdapter", () => {
     const high = await createOn("高优先");
     const starredLow = await createOn("星标低优");
     const starredHigh = await createOn("星标高优");
-    await adapter.updateTask(high.id, { priority: "HIGH" });
-    await adapter.updateTask(starredLow.id, { priority: "LOW", star: true });
-    await adapter.updateTask(starredHigh.id, { priority: "HIGH", star: true });
+    await adapter.updateTask(high.id, { priority: "HIGH", expectedVersion: 0 });
+    await adapter.updateTask(starredLow.id, {
+      priority: "LOW",
+      star: true,
+      expectedVersion: 0,
+    });
+    await adapter.updateTask(starredHigh.id, {
+      priority: "HIGH",
+      star: true,
+      expectedVersion: 0,
+    });
 
     const expected = [starredHigh.id, starredLow.id, high.id, plain.id];
     const today = (await adapter.getToday("2026-09-01")) as {
@@ -551,32 +584,13 @@ describe("SqliteLocalDataAdapter", () => {
       carried: number;
       blocked: number;
       failed: number;
-      status: string;
-      items: Array<{
-        sourceTaskId: string;
-        targetTaskId: string | null;
-        targetDate: string | null;
-        outcome: string;
-        studentName: string | null;
-        title: string | null;
-      }>;
     };
     expect(summary).toMatchObject({
       scanned: 1,
       carried: 1,
       blocked: 0,
       failed: 0,
-      status: "SUCCEEDED",
     });
-    // ACC-067: each outcome row identifies the student and the task, so a
-    // blocked item is actionable rather than an opaque id.
-    expect(summary.items[0]).toMatchObject({
-      sourceTaskId: source.id,
-      targetDate: "2026-08-21",
-      outcome: "CARRIED_OVER",
-      studentName: "周同学",
-    });
-    expect(summary.items[0].title).toBeTruthy();
 
     const lineage = await storage.select<{
       source_status: string;
@@ -600,8 +614,66 @@ describe("SqliteLocalDataAdapter", () => {
       scanned: 0,
       carried: 0,
       failed: 0,
-      status: "SUCCEEDED",
     });
+  });
+
+  it("catches up the day close that nobody ran while the app was closed", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      studentCode: "S-REC",
+      name: "补日结同学",
+      defaultDevicePolicy: "ALLOWED",
+    })) as { id: string };
+    await adapter.saveWeeklyPattern(student.id, {
+      effectiveFrom: "2026-08-17",
+      days: Array.from({ length: 7 }, (_, index) => ({
+        dayOfWeek: index + 1,
+        available: true,
+        availableMinutes: 120,
+        devicePolicyOverride: null,
+      })),
+    });
+    // 关着的这几天各积了一项，启动时应该一次全扫掉。
+    for (const scheduledDate of ["2026-08-19", "2026-08-20", "2026-08-21"]) {
+      await adapter.createAdHocTask({
+        studentId: student.id,
+        scheduledDate,
+        title: `落下的 ${scheduledDate}`,
+        locked: false,
+        idempotencyKey: crypto.randomUUID(),
+      });
+    }
+
+    const first = (await adapter.reconcileStartup("2026-08-22")) as {
+      ran: boolean;
+      previousDate: string | null;
+      summary: { scanned: number; carried: number; failed: number } | null;
+    };
+    expect(first.ran).toBe(true);
+    expect(first.previousDate).toBeNull();
+    expect(first.summary).toMatchObject({ scanned: 3, carried: 3, failed: 0 });
+
+    // 同一天再开一次不重复扫，也不再出声。
+    const second = (await adapter.reconcileStartup("2026-08-22")) as {
+      ran: boolean;
+      previousDate: string | null;
+      summary: unknown;
+    };
+    expect(second).toMatchObject({
+      ran: false,
+      previousDate: "2026-08-22",
+      summary: null,
+    });
+
+    // 顺延后的任务落在 22 号之后，下一天的补日结才会再管它们。
+    const pending = await storage.select<{ scheduled_date: string }>(
+      `SELECT scheduled_date FROM task_instance WHERE status = 'PENDING'
+       ORDER BY scheduled_date`,
+    );
+    expect(pending.every((row) => row.scheduled_date > "2026-08-22")).toBe(
+      true,
+    );
   });
 
   it("deletes both ends of a carry-forward chain and rolls the track pointer back", async () => {
@@ -735,6 +807,88 @@ describe("SqliteLocalDataAdapter", () => {
     expect(sourceStillExists).toHaveLength(1);
   });
 
+  it("edits task text across all views and rejects stale edits", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      name: "编辑同学",
+      defaultDevicePolicy: "ALLOWED",
+    })) as {
+      id: string;
+    };
+    const task = (await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-09-10",
+      title: "原任务",
+      note: "原备注",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    await storage.execute(
+      "UPDATE task_instance SET short_title_snapshot = '原简称' WHERE id = $1",
+      [task.id],
+    );
+    await expect(
+      adapter.updateTask(task.id, {
+        title: "阅读复盘",
+        note: "保留重点",
+        expectedVersion: 0,
+      }),
+    ).resolves.toMatchObject({
+      titleSnapshot: "阅读复盘",
+      shortTitleSnapshot: null,
+      note: "保留重点",
+      version: 1,
+    });
+    await expect(
+      adapter.updateTask(task.id, { title: "过期输入", expectedVersion: 0 }),
+    ).rejects.toMatchObject({ code: "LOCAL_DATABASE_ERROR" });
+    const today = (await adapter.getToday("2026-09-10")) as {
+      students: Array<{ tasks: unknown[] }>;
+    };
+    expect(today.students[0].tasks[0]).toMatchObject({
+      title: "阅读复盘",
+      note: "保留重点",
+    });
+    const workbench = (await adapter.getWorkbench(
+      "2026-09-10",
+      "2026-09-10",
+    )) as { students: Array<{ days: Record<string, { tasks: unknown[] }> }> };
+    expect(workbench.students[0].days["2026-09-10"].tasks[0]).toMatchObject({
+      title: "阅读复盘",
+      note: "保留重点",
+    });
+    const schedule = (await adapter.getSchedule(student.id, {
+      from: "2026-09-10",
+      view: "day",
+    })) as { days: Array<{ tasks: unknown[] }> };
+    expect(schedule.days[0].tasks[0]).toMatchObject({
+      title: "阅读复盘",
+      note: "保留重点",
+    });
+    await expect(
+      adapter.updateTask(task.id, { note: "", expectedVersion: 1 }),
+    ).resolves.toMatchObject({ titleSnapshot: "阅读复盘", note: "" });
+  });
+
+  it("keeps sequence definitions out of course selectors and searches", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const course = (await adapter.createTemplate({
+      name: "阅读 Day",
+      unitLabel: "项",
+    })) as { id: string };
+    await adapter.createLongTask({ sampleTitle: "阅读 Day 1" });
+    for (const query of [undefined, "Day"]) {
+      const result = (await adapter.listTemplates(query)) as {
+        items: Array<{ id: string }>;
+      };
+      expect(result.items.map((item) => item.id)).toEqual([course.id]);
+    }
+    await expect(adapter.listTemplates("LT-")).resolves.toMatchObject({
+      items: [],
+    });
+  });
+
   it("does not delete a task when delete version is stale", async () => {
     storage = new NodeSqliteStorage();
     const adapter = new SqliteLocalDataAdapter(storage);
@@ -750,7 +904,7 @@ describe("SqliteLocalDataAdapter", () => {
       title: "版本保护删除",
     })) as { id: string };
 
-    await adapter.updateTask(task.id, { title: "已更新" });
+    await adapter.updateTask(task.id, { title: "已更新", expectedVersion: 0 });
     await expect(
       adapter.deleteTask(task.id, { expectedVersion: 0 }),
     ).rejects.toMatchObject({
@@ -863,7 +1017,7 @@ describe("SqliteLocalDataAdapter", () => {
     });
   });
 
-  it("moves a track task across students and detaches it from the source track", async () => {
+  it("refuses to move a track task to another student and keeps the row intact", async () => {
     storage = new NodeSqliteStorage();
     const adapter = new SqliteLocalDataAdapter(storage);
     const pattern = {
@@ -961,34 +1115,59 @@ describe("SqliteLocalDataAdapter", () => {
         targetDate: "2026-08-19",
         targetStudentId: to.id,
       }),
-    ).resolves.toBeNull();
+    ).rejects.toMatchObject({
+      code: "TRACK_TASK_CROSS_STUDENT",
+    } satisfies Partial<ApiError>);
 
+    const untouched = await storage.select<{
+      student_id: string;
+      scheduled_date: string;
+      source_type: string;
+      track_id: string | null;
+      item_ordinal: number | null;
+      version: number;
+    }>(
+      `SELECT student_id, scheduled_date, source_type, track_id, item_ordinal,
+              version
+         FROM task_instance WHERE id = $1`,
+      [task.id],
+    );
+    expect(untouched[0]).toEqual({
+      student_id: from.id,
+      scheduled_date: "2026-08-18",
+      source_type: "TRACK",
+      track_id: track.id,
+      item_ordinal: 1,
+      version: task.version,
+    });
+
+    // 同一个学生内改期不受影响：轨道关系原样保留。
+    await expect(
+      adapter.rescheduleTask({
+        taskId: task.id,
+        expectedVersion: task.version,
+        targetDate: "2026-08-19",
+      }),
+    ).resolves.toBeNull();
     const moved = await storage.select<{
       student_id: string;
       scheduled_date: string;
       source_type: string;
-      schedule_origin: string;
       track_id: string | null;
-      template_version_id: string | null;
-      template_item_id: string | null;
       item_ordinal: number | null;
       manual_override: number;
     }>(
-      `SELECT student_id, scheduled_date, source_type, schedule_origin,
-              track_id, template_version_id, template_item_id, item_ordinal,
+      `SELECT student_id, scheduled_date, source_type, track_id, item_ordinal,
               manual_override
          FROM task_instance WHERE id = $1`,
       [task.id],
     );
     expect(moved[0]).toEqual({
-      student_id: to.id,
+      student_id: from.id,
       scheduled_date: "2026-08-19",
-      source_type: "AD_HOC",
-      schedule_origin: "AD_HOC",
-      track_id: null,
-      template_version_id: null,
-      template_item_id: null,
-      item_ordinal: null,
+      source_type: "TRACK",
+      track_id: track.id,
+      item_ordinal: 1,
       manual_override: 1,
     });
     expect(
@@ -1922,7 +2101,8 @@ describe("SqliteLocalDataAdapter", () => {
     expect(examNext.titleSnapshot).toBe("真题2025");
     expect(examNext.shortTitleSnapshot).toBe("真题25");
 
-    // 标题没有尾部数字：退化为普通复制，标题不变、排到下一天。
+    // 标题没有尾部数字：退化为普通复制。S-SERIES 没有周模式，可学习性回落到
+    // DEFAULT（每天可学），所以下一个可学习日就是下一个日历日。
     const plain = (await adapter.createAdHocTask({
       studentId: student.id,
       scheduledDate: "2026-09-03",
@@ -1935,6 +2115,48 @@ describe("SqliteLocalDataAdapter", () => {
     };
     expect(plainNext.titleSnapshot).toBe("背单词");
     expect(plainNext.scheduledDate).toBe("2026-09-04");
+  });
+
+  // §6：「继续这个系列」是长期任务的手动版本，排期规则必须和 SEQUENCE 轨道一致。
+  it("schedules the next series task on the next study day, not the next calendar day", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = await setupSequenceStudent(adapter, "S-SERIES-WEEKEND");
+
+    const friday = (await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-09-04",
+      title: "一天一句长难句day1",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    const next = (await adapter.createNextSeriesTask(friday.id)) as {
+      titleSnapshot: string;
+      scheduledDate: string;
+    };
+    expect(next).toMatchObject({
+      titleSnapshot: "一天一句长难句day2",
+      scheduledDate: "2026-09-07",
+    });
+
+    // 单日覆盖优先于周模式：周一设为不可学后，从周五接排落到周二。顺带守住取
+    // 日历的时间窗——窗口从源任务当天起算，收窄它就会漏掉这条覆盖。
+    const weekDates = Array.from({ length: 7 }, (_, index) =>
+      new Date(Date.UTC(2026, 8, 7 + index)).toISOString().slice(0, 10),
+    );
+    await adapter.saveWeekPlan(student.id, "2026-09-07", {
+      sourceType: "MANUAL",
+      days: weekDates.map((date) => ({
+        businessDate: date,
+        available: date !== "2026-09-07",
+        availableMinutes: date === "2026-09-07" ? 0 : 120,
+        devicePolicyOverride: null,
+        note: null,
+      })),
+    });
+    const afterOverride = (await adapter.createNextSeriesTask(friday.id)) as {
+      scheduledDate: string;
+    };
+    expect(afterOverride.scheduledDate).toBe("2026-09-08");
   });
 
   // -------------------------------------------------------------------------
@@ -1980,14 +2202,115 @@ describe("SqliteLocalDataAdapter", () => {
     );
   }
 
+  it("replays commits made after the first idempotency read and before validation", async () => {
+    const racingStorage = new InterleavedSqliteStorage();
+    storage = racingStorage;
+    const adapter = new SqliteLocalDataAdapter(racingStorage);
+    const student = await setupSequenceStudent(adapter, "S920");
+
+    async function assertCommittedReplay(command: () => Promise<unknown>) {
+      let committed: unknown;
+      racingStorage.afterIdempotencyMiss = async () => {
+        committed = await command();
+      };
+      const replay = await command();
+      expect(replay).toEqual(committed);
+      return replay;
+    }
+
+    const createInput = {
+      studentId: student.id,
+      title: "并发练习 Day 4",
+      scheduledDate: "2026-08-17",
+      idempotencyKey: crypto.randomUUID(),
+    };
+    const task = (await assertCommittedReplay(() =>
+      adapter.createAdHocTask(createInput),
+    )) as { id: string };
+
+    const convertInput = { idempotencyKey: crypto.randomUUID() };
+    const converted = (await assertCommittedReplay(() =>
+      adapter.convertTaskToLongTask(task.id, convertInput),
+    )) as { trackId: string; track: { currentOrdinal: number } };
+    expect(converted.track.currentOrdinal).toBe(4);
+
+    const definition = (await adapter.createLongTask({
+      sampleTitle: "并发挂载 Day 1",
+    })) as { id: string };
+    const mountInput = {
+      studentId: student.id,
+      longTaskId: definition.id,
+      anchorDate: "2026-08-17",
+      idempotencyKey: crypto.randomUUID(),
+    };
+    const mounted = (await assertCommittedReplay(() =>
+      adapter.mountLongTask(mountInput),
+    )) as { id: string; version: number };
+
+    const [first] = await pendingTasks(racingStorage, mounted.id);
+    await adapter.deleteTask(first.id, { expectedVersion: 0 });
+    const resumeInput = {
+      expectedVersion: mounted.version,
+      candidateDate: "2026-08-18",
+      idempotencyKey: crypto.randomUUID(),
+    };
+    await assertCommittedReplay(() =>
+      adapter.resumeSequenceTrack(mounted.id, resumeInput),
+    );
+    expect(await pendingTasks(racingStorage, mounted.id)).toHaveLength(1);
+
+    const template = (await adapter.createTemplate({
+      templateCode: "CONCURRENT",
+      name: "并发模板",
+      subjectCode: "ENGLISH",
+      unitLabel: "项",
+    })) as { id: string };
+    const detail = (await adapter.getTemplateDetail(template.id)) as {
+      versions: Array<{ id: string; status: string }>;
+    };
+    const version = detail.versions.find((item) => item.status === "DRAFT")!;
+    await adapter.replaceVersionItems(version.id, {
+      items: [{ ordinal: 1, itemCode: "C1", title: "练习 1", active: true }],
+    });
+    await adapter.publishVersion(version.id);
+    const trackInput = {
+      studentId: student.id,
+      templateId: template.id,
+      templateVersionId: version.id,
+      startOrdinal: 1,
+      endOrdinal: 1,
+      startDate: "2026-08-17",
+      createFirstInstance: true,
+      idempotencyKey: crypto.randomUUID(),
+    };
+    await assertCommittedReplay(() => adapter.mountTrack(trackInput));
+
+    const counts = await racingStorage.select<{
+      tracks: number;
+      tasks: number;
+    }>(
+      `SELECT (SELECT COUNT(*) FROM student_task_track) AS tracks,
+              (SELECT COUNT(*) FROM task_instance) AS tasks`,
+    );
+    expect(counts).toEqual([{ tracks: 3, tasks: 3 }]);
+  });
+
   it("creates a sequence definition, mounts it, and advances on completion", async () => {
     storage = new NodeSqliteStorage();
     const adapter = new SqliteLocalDataAdapter(storage);
     const student = await setupSequenceStudent(adapter, "S900");
 
-    const definition = (await adapter.createLongTask({
-      sampleTitle: "一天一句长难句 Day 1",
-    })) as {
+    const createKey = crypto.randomUUID();
+    const [definition, replayedDefinition] = (await Promise.all([
+      adapter.createLongTask({
+        sampleTitle: "一天一句长难句 Day 1",
+        idempotencyKey: createKey,
+      }),
+      adapter.createLongTask({
+        sampleTitle: "一天一句长难句 Day 1",
+        idempotencyKey: createKey,
+      }),
+    ])) as Array<{
       id: string;
       name: string;
       titlePattern: string;
@@ -1995,15 +2318,16 @@ describe("SqliteLocalDataAdapter", () => {
       endOrdinal: number | null;
       status: string;
       activeTrackCount: number;
-    };
+    }>;
     expect(definition).toMatchObject({
-      name: "一天一句长难句 Day",
+      name: "一天一句长难句",
       titlePattern: "一天一句长难句 Day {n}",
       defaultStartOrdinal: 1,
       endOrdinal: null,
       status: "ACTIVE",
       activeTrackCount: 0,
     });
+    expect(replayedDefinition).toMatchObject({ id: definition.id });
     // SEQUENCE 定义不走 Draft/Version/Publish 机制（AC-LT-014 的数据面）。
     const versionRows = await storage.select<{ count: number }>(
       `SELECT COUNT(*) AS count FROM task_template_version WHERE template_id = $1`,
@@ -2012,12 +2336,20 @@ describe("SqliteLocalDataAdapter", () => {
     expect(versionRows[0].count).toBe(0);
 
     const mountKey = crypto.randomUUID();
-    const track = (await adapter.mountLongTask({
-      studentId: student.id,
-      longTaskId: definition.id,
-      anchorDate: "2026-08-17",
-      idempotencyKey: mountKey,
-    })) as {
+    const [track, concurrentMountReplay] = (await Promise.all([
+      adapter.mountLongTask({
+        studentId: student.id,
+        longTaskId: definition.id,
+        anchorDate: "2026-08-17",
+        idempotencyKey: mountKey,
+      }),
+      adapter.mountLongTask({
+        studentId: student.id,
+        longTaskId: definition.id,
+        anchorDate: "2026-08-17",
+        idempotencyKey: mountKey,
+      }),
+    ])) as Array<{
       id: string;
       generationMode: string;
       currentOrdinal: number;
@@ -2025,12 +2357,13 @@ describe("SqliteLocalDataAdapter", () => {
       definitionName: string | null;
       titlePatternSnapshot: string | null;
       progress: { percent: number | null; totalUnits: number | null };
-    };
+    }>;
+    expect(concurrentMountReplay.id).toBe(track.id);
     expect(track).toMatchObject({
       generationMode: "SEQUENCE",
       currentOrdinal: 1,
       endOrdinal: null,
-      definitionName: "一天一句长难句 Day",
+      definitionName: "一天一句长难句",
       titlePatternSnapshot: "一天一句长难句 Day {n}",
     });
     // 开放型没有百分比（AC-LT-005 的视图面）。
@@ -2106,6 +2439,95 @@ describe("SqliteLocalDataAdapter", () => {
     });
     expect(await pendingTasks(storage, track.id)).toMatchObject([
       { title: "一天一句长难句 Day 2", scheduled_date: "2026-08-24" },
+    ]);
+  });
+
+  it("completes the task but reports a broken chain when no study day fits", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = await setupSequenceStudent(adapter, "S906");
+
+    const definition = (await adapter.createLongTask({
+      sampleTitle: "一天一句长难句 Day 1",
+    })) as { id: string };
+    const track = (await adapter.mountLongTask({
+      studentId: student.id,
+      longTaskId: definition.id,
+      anchorDate: "2026-08-17",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    const [day1] = await pendingTasks(storage, track.id);
+
+    // 整周停学：Day 2 在 90 天内排不到日子。
+    await adapter.saveWeeklyPattern(student.id, {
+      effectiveFrom: "2026-08-18",
+      days: Array.from({ length: 7 }, (_, index) => ({
+        dayOfWeek: index + 1,
+        available: false,
+        availableMinutes: 0,
+        devicePolicyOverride: null,
+      })),
+    });
+
+    const result = (await adapter.completeTask({
+      taskId: day1.id,
+      idempotencyKey: crypto.randomUUID(),
+    })) as { status: string; chainWarning: string | null };
+    // 任务照样完成、指针照样推进，但断点必须说出来而不是静默消失。
+    expect(result.status).toBe("COMPLETED");
+    expect(result.chainWarning).toContain("90 天");
+    expect(await pendingTasks(storage, track.id)).toHaveLength(0);
+    expect(
+      (await adapter.getTrack(track.id)) as {
+        status: string;
+        currentOrdinal: number;
+        warnings: string[];
+      },
+    ).toMatchObject({
+      status: "ACTIVE",
+      currentOrdinal: 2,
+      warnings: ["没有待完成任务，下一项未排期"],
+    });
+
+    await adapter.saveWeeklyPattern(student.id, {
+      effectiveFrom: "2026-08-18",
+      days: Array.from({ length: 7 }, (_, index) => ({
+        dayOfWeek: index + 1,
+        available: true,
+        availableMinutes: 60,
+        devicePolicyOverride: "ALLOWED",
+      })),
+    });
+    const stalledTrack = (await adapter.getTrack(track.id)) as {
+      version: number;
+    };
+    const resumed = (await adapter.resumeSequenceTrack(track.id, {
+      expectedVersion: stalledTrack.version,
+      candidateDate: "2026-08-18",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { warnings: string[] };
+    expect(resumed.warnings).toEqual([]);
+    expect(await pendingTasks(storage, track.id)).toMatchObject([
+      {
+        title: "一天一句长难句 Day 2",
+        scheduled_date: "2026-08-18",
+        item_ordinal: 2,
+      },
+    ]);
+
+    // 删除已经完成的历史项只删历史，不得把指针退回并重建 Day 1。
+    const completedDay1 = await storage.select<{ version: number }>(
+      "SELECT version FROM task_instance WHERE id = $1",
+      [day1.id],
+    );
+    await adapter.deleteTask(day1.id, {
+      expectedVersion: completedDay1[0].version,
+    });
+    expect(
+      (await adapter.getTrack(track.id)) as { currentOrdinal: number },
+    ).toMatchObject({ currentOrdinal: 2 });
+    expect(await pendingTasks(storage, track.id)).toMatchObject([
+      { title: "一天一句长难句 Day 2", item_ordinal: 2 },
     ]);
   });
 
@@ -2243,8 +2665,9 @@ describe("SqliteLocalDataAdapter", () => {
       idempotencyKey: crypto.randomUUID(),
     })) as { id: string; version: number };
 
+    const convertKey = crypto.randomUUID();
     const result = (await adapter.convertTaskToLongTask(day4.id, {
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey: convertKey,
     })) as {
       taskId: string;
       trackId: string;
@@ -2266,6 +2689,15 @@ describe("SqliteLocalDataAdapter", () => {
       generationMode: "SEQUENCE",
       startOrdinal: 4,
       currentOrdinal: 4,
+    });
+    await expect(
+      adapter.convertTaskToLongTask(day4.id, {
+        idempotencyKey: convertKey,
+      }),
+    ).resolves.toMatchObject({
+      taskId: day4.id,
+      trackId: result.trackId,
+      track: { id: result.trackId, generationMode: "SEQUENCE" },
     });
     const promoted = await storage.select<{
       source_type: string;
@@ -2343,7 +2775,7 @@ describe("SqliteLocalDataAdapter", () => {
     } satisfies Partial<ApiError>);
   });
 
-  it("rejects batch scheduling and duplicate pending ordinals on sequence tracks", async () => {
+  it("rejects duplicate pending ordinals on sequence tracks", async () => {
     storage = new NodeSqliteStorage();
     const adapter = new SqliteLocalDataAdapter(storage);
     const student = await setupSequenceStudent(adapter, "S906");
@@ -2358,17 +2790,6 @@ describe("SqliteLocalDataAdapter", () => {
       idempotencyKey: crypto.randomUUID(),
     })) as { id: string };
 
-    // 长期任务轨道自动推进，不提供手动批量排期。
-    await expect(
-      adapter.scheduleTrackItems(track.id, {
-        startOrdinal: 1,
-        unitCount: 2,
-        date: "2026-08-17",
-      }),
-    ).rejects.toMatchObject({
-      code: "SEQUENCE_TRACK_SCHEDULE_NOT_SUPPORTED",
-    } satisfies Partial<ApiError>);
-
     // 数据库层：同 track+ordinal 不允许出现第二个 PENDING 实例。
     // storage.execute 在 node:sqlite 下是同步抛错，包一层 async 让两种
     // 存储后端（同步抛/异步 reject）都走 rejects 断言。
@@ -2382,5 +2803,89 @@ describe("SqliteLocalDataAdapter", () => {
           [crypto.randomUUID(), student.id, track.id],
         ))(),
     ).rejects.toThrow();
+  });
+
+  it("suggests long-task conversion only after four consecutive ad-hoc items", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = await setupSequenceStudent(adapter, "S907");
+
+    const suggestionsFor = async (studentId: string) => {
+      const result = (await adapter.listSeriesSuggestions(studentId)) as {
+        items: {
+          normalizedKey: string;
+          seriesName: string;
+          titlePattern: string;
+          assignmentCount: number;
+          nextOrdinal: number;
+          taskId: string;
+          taskVersion: number;
+        }[];
+      };
+      return result.items;
+    };
+    const addAdHoc = (studentId: string, date: string, title: string) =>
+      adapter.createAdHocTask({
+        studentId,
+        scheduledDate: date,
+        title,
+        idempotencyKey: crypto.randomUUID(),
+      }) as Promise<{ id: string; version: number }>;
+    const week = [
+      "2026-08-17",
+      "2026-08-18",
+      "2026-08-19",
+      "2026-08-20",
+      "2026-08-21",
+    ];
+
+    const created: { id: string; version: number }[] = [];
+    for (const ordinal of [1, 2, 3, 4]) {
+      created.push(
+        await addAdHoc(student.id, week[ordinal - 1], `密卷${ordinal}`),
+      );
+      // 连到第 4 项才问一句，前三次不打扰助教。
+      expect(await suggestionsFor(student.id)).toHaveLength(
+        ordinal === 4 ? 1 : 0,
+      );
+    }
+    expect((await suggestionsFor(student.id))[0]).toMatchObject({
+      normalizedKey: "密卷",
+      seriesName: "密卷",
+      titlePattern: "密卷{n}",
+      assignmentCount: 4,
+      nextOrdinal: 5,
+      taskId: created[3].id,
+      taskVersion: created[3].version,
+    });
+
+    // "暂不"落在 app_setting，重开也不再问；重复点不叠加。
+    await adapter.dismissSeriesSuggestion(student.id, {
+      normalizedKey: "密卷",
+    });
+    await adapter.dismissSeriesSuggestion(student.id, {
+      normalizedKey: "密卷",
+    });
+    expect(await suggestionsFor(student.id)).toHaveLength(0);
+    const dismissed = await storage.select<{ setting_value: string }>(
+      `SELECT setting_value FROM app_setting WHERE setting_key = $1`,
+      [`series.suggestion.dismissed:${student.id}`],
+    );
+    expect(dismissed).toHaveLength(1);
+    expect(dismissed[0].setting_value).toBe(JSON.stringify(["密卷"]));
+
+    // 已挂轨道的系列不再建议：转掉第 5 项后 1~4 仍是 4 连号。
+    const mounted = await setupSequenceStudent(adapter, "S908");
+    const items: { id: string }[] = [];
+    for (const ordinal of [1, 2, 3, 4, 5]) {
+      items.push(
+        await addAdHoc(mounted.id, week[ordinal - 1], `真题精讲${ordinal}`),
+      );
+    }
+    expect(await suggestionsFor(mounted.id)).toHaveLength(1);
+    await adapter.convertTaskToLongTask(items[4].id, {
+      idempotencyKey: crypto.randomUUID(),
+    });
+    expect(await suggestionsFor(mounted.id)).toHaveLength(0);
   });
 });

@@ -39,7 +39,7 @@ ADR-001 假设产品有服务端状态真值、租户与 RBAC。Flowclass 融合
 2. **日结不落 run 记录。** 与退役前的 Java 行为一致：`triggerDayClose` 返回本次批量结果，不写 `day_close_run`。历史追溯目前依赖任务自身的 lineage。
 3. **全局搜索用 LIKE，不用 FTS5。** 单机数据量下足够；任务书 `LOC-016` 允许按需再上 FTS5。
 4. **Calendar 采用 Partial。** Month 视图与 core/DnD 复用 Flowclass；Day/Week 保留 WD 的日期语义，不虚构小时（任务书风险 R2）。
-5. **无自动备份。** 用户数据只有 `assistant.db` 一个文件，目前依赖用户自己备份。
+5. **按需手动导出。** 顶栏「更多工具 → 导出数据」通过 SQLite `VACUUM INTO` 生成包含已提交 WAL 内容的独立数据库文件，保存到用户文档目录的 `AssistantExports`。不提供后台备份调度、备份中心或启动恢复流程。
 
 ## 后果
 

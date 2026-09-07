@@ -35,7 +35,11 @@ import {
 } from "./availabilityApi";
 import { MountTrackModal } from "../planning/MountTrackModal";
 import { MountLongTaskModal } from "../longtasks/MountLongTaskModal";
-import { listStudentTracks } from "../planning/trackApi";
+import {
+  listStudentTracks,
+  resumeSequenceTrack,
+  type Track,
+} from "../planning/trackApi";
 import { TrackProgressPanel } from "../planning/TrackProgressPanel";
 import {
   deleteStudent,
@@ -79,7 +83,6 @@ type StudentFormValues = {
   alias: string | null;
   status: StudentStatus;
   defaultDevicePolicy: DevicePolicy;
-  primaryAssistantId: string | null;
   classType: string | null;
   enrollmentDate: unknown;
   note: string | null;
@@ -115,7 +118,6 @@ function toFormValues(student: Student): StudentFormValues {
     alias: student.alias ?? "",
     status: student.status,
     defaultDevicePolicy: student.defaultDevicePolicy,
-    primaryAssistantId: student.primaryAssistantId ?? "",
     classType: student.classType ?? "",
     enrollmentDate: student.enrollmentDate ? student.enrollmentDate : null,
     note: student.note ?? "",
@@ -180,10 +182,6 @@ export function StudentProfilePage() {
         alias: values.alias && values.alias.length > 0 ? values.alias : null,
         status: values.status,
         defaultDevicePolicy: values.defaultDevicePolicy,
-        primaryAssistantId:
-          values.primaryAssistantId && values.primaryAssistantId.length > 0
-            ? values.primaryAssistantId
-            : null,
         classType:
           values.classType && values.classType.length > 0
             ? values.classType
@@ -405,9 +403,6 @@ export function StudentProfilePage() {
             <Form.Item name="defaultDevicePolicy" label="默认设备条件">
               <Select options={devicePolicyOptions} />
             </Form.Item>
-            <Form.Item name="primaryAssistantId" label="负责助教 ID">
-              <Input placeholder="UUID（可选）" />
-            </Form.Item>
             <Form.Item name="note" label="备注">
               <Input.TextArea rows={3} maxLength={2000} />
             </Form.Item>
@@ -499,10 +494,22 @@ export function StudentProfilePage() {
 }
 
 function TrackSection({ studentId }: { studentId: string }) {
+  const { message } = App.useApp();
+  const queryClient = useQueryClient();
   const tracksQuery = useQuery({
     queryKey: ["student-tracks", studentId],
     queryFn: () => listStudentTracks(studentId, "ACTIVE"),
     retry: false,
+  });
+  const resumeMutation = useMutation({
+    mutationFn: (track: Track) => resumeSequenceTrack(track.id, track.version),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["student-tracks", studentId],
+      });
+      void message.success("长期任务已重新接排");
+    },
+    onError: (error: Error) => void message.error(error.message),
   });
 
   if (tracksQuery.isPending) {
@@ -522,7 +529,12 @@ function TrackSection({ studentId }: { studentId: string }) {
     );
   }
 
-  return <TrackProgressPanel tracks={tracksQuery.data} />;
+  return (
+    <TrackProgressPanel
+      tracks={tracksQuery.data}
+      onResumeSequenceTrack={(track) => resumeMutation.mutate(track)}
+    />
+  );
 }
 
 const DAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];

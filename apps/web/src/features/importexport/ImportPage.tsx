@@ -17,7 +17,7 @@ import {
   Upload,
   type UploadProps,
 } from "antd";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError } from "../../lib/api/ApiError";
@@ -36,6 +36,7 @@ import {
 const { Dragger } = Upload;
 
 export function ImportPage() {
+  const queryClient = useQueryClient();
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [result, setResult] = useState<ImportJobStatus | null>(null);
   const [mappings, setMappings] = useState<Record<string, ColumnMapping>>({});
@@ -83,7 +84,8 @@ export function ImportPage() {
   const executeMutation = useMutation({
     mutationFn: (params: { jobId: string; mappings: ColumnMapping[] }) =>
       executeImport(params.jobId, params.mappings),
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
+      await queryClient.invalidateQueries({ queryKey: ["templates"] });
       setResult(data);
     },
   });

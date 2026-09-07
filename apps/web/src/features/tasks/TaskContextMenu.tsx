@@ -2,8 +2,6 @@ import {
   CopyOutlined,
   DeleteOutlined,
   CalendarOutlined,
-  LinkOutlined,
-  PlusOutlined,
   EyeOutlined,
   FlagFilled,
   ForwardOutlined,
@@ -22,12 +20,10 @@ export interface TaskContextMenuProps {
   canCarryForward: boolean;
   onCarryForward?: () => void;
   onDuplicate: () => void;
-  /** 系列推进：生成“序号+1、排到下一天”的新任务。未提供时不显示该项。 */
+  /** 系列推进：接着排下一项（序号+1，落到下一个可学习日）。未提供时不显示。 */
   onCreateNext?: () => void;
   /** 原地升级为长期任务（SEQUENCE 轨道）。仅待办的普通任务会拿到该回调。 */
   onConvertToLongTask?: () => void;
-  onAddSubTask: () => void;
-  onLinkParent: () => void;
   onViewDetail: () => void;
   onDelete: () => void;
 }
@@ -39,6 +35,11 @@ export interface TaskContextMenuProps {
  * The priority submenu mirrors TickTick's flag row: a red flag (高), a yellow
  * flag (中), and a clear option (取消) that removes the priority. The active
  * option is marked with a check so the user can see the current state.
+ *
+ * 菜单是刻意短的：完成/改期/顺延/复制/继续这个系列/设为长期任务/查看详情/
+ * 删除/优先级。子任务与「关联主任务」曾经在这里，需要助教手输一个 UUID 才能
+ * 用——助教永远不应该看到 UUID，两项连同输入框一起从产品里删掉了（数据库列
+ * parent_task_id / linked_parent_task_id 保留，migration 不动）。别再加回来。
  */
 export function buildTaskMenuItems(
   props: TaskContextMenuProps,
@@ -53,8 +54,6 @@ export function buildTaskMenuItems(
     onDuplicate,
     onCreateNext,
     onConvertToLongTask,
-    onAddSubTask,
-    onLinkParent,
     onViewDetail,
     onDelete,
   } = props;
@@ -126,7 +125,7 @@ export function buildTaskMenuItems(
           {
             key: "createNext",
             icon: <RocketOutlined />,
-            label: "生成下一项（序号+1，排到下一天）",
+            label: "继续这个系列",
             disabled: locked,
             onClick: onCreateNext,
           },
@@ -144,20 +143,6 @@ export function buildTaskMenuItems(
           },
         ]
       : []),
-    {
-      key: "addSubTask",
-      icon: <PlusOutlined />,
-      label: "添加子任务…",
-      disabled: locked,
-      onClick: onAddSubTask,
-    },
-    {
-      key: "linkParent",
-      icon: <LinkOutlined />,
-      label: "关联主任务…",
-      disabled: locked,
-      onClick: onLinkParent,
-    },
     { type: "divider" },
     {
       key: "viewDetail",

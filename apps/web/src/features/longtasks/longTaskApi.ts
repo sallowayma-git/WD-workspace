@@ -38,12 +38,14 @@ export function createLongTask(input: {
   sampleTitle: string;
   startOrdinal?: number;
   endOrdinal?: number | null;
+  idempotencyKey?: string;
 }): Promise<LongTask> {
   return getDataAdapter()
     .createLongTask({
       sampleTitle: input.sampleTitle,
       startOrdinal: input.startOrdinal ?? null,
       endOrdinal: input.endOrdinal ?? null,
+      idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
     })
     .then((value) => longTaskSchema.parse(value));
 }

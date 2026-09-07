@@ -42,6 +42,7 @@ const todayTaskSchema = taskViewSchema
     // undefined when absent, and the page falls back to the existing flat
     // list behavior.
     ...taskCardContractFields,
+    note: taskViewSchema.shape.note.optional(),
   });
 
 const todayStudentGroupSchema = z.object({
@@ -102,16 +103,28 @@ export function getToday(date?: string): Promise<TodayResponse> {
     .then((value) => todayResponseSchema.parse(value));
 }
 
+const completeResultSchema = z.object({
+  taskId: z.string().uuid(),
+  status: z.string(),
+  currentOrdinal: z.number().nullable(),
+  // 轨道接排不出下一项时任务照样完成，断点只能靠这句话让人看见。
+  chainWarning: z.string().nullable().default(null),
+});
+
+export type CompleteResult = z.infer<typeof completeResultSchema>;
+
 export function completeTask(
   taskId: string,
   expectedVersion: number,
   idempotencyKey: string,
-): Promise<unknown> {
-  return getDataAdapter().completeTask({
-    taskId,
-    expectedVersion,
-    idempotencyKey,
-  });
+): Promise<CompleteResult> {
+  return getDataAdapter()
+    .completeTask({
+      taskId,
+      expectedVersion,
+      idempotencyKey,
+    })
+    .then((value) => completeResultSchema.parse(value));
 }
 
 const carryForwardResultSchema = z.object({

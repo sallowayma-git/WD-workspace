@@ -35,11 +35,67 @@ CREATE TABLE task_instance_backup AS
 
 DROP TABLE task_instance;
 
+-- Build and populate the replacement parent before restoring task rows. The
+-- temporary task table below points at this replacement, so dropping the old
+-- parent cannot execute ON DELETE SET NULL against existing TRACK tasks.
+CREATE TABLE student_task_track_migrated (
+    id TEXT PRIMARY KEY,
+    student_id TEXT NOT NULL REFERENCES student(id) ON DELETE CASCADE,
+    template_id TEXT NOT NULL REFERENCES task_template(id),
+    template_version_id TEXT REFERENCES task_template_version(id),
+    generation_mode TEXT NOT NULL DEFAULT 'ITEMIZED'
+        CHECK (generation_mode IN ('ITEMIZED', 'SEQUENCE')),
+    status TEXT NOT NULL DEFAULT 'ACTIVE'
+        CHECK (status IN ('NOT_STARTED', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED')),
+    start_ordinal INTEGER NOT NULL CHECK (start_ordinal >= 1),
+    current_ordinal INTEGER NOT NULL CHECK (current_ordinal >= 1),
+    end_ordinal INTEGER
+        CHECK (end_ordinal IS NULL OR end_ordinal >= start_ordinal),
+    default_units_per_session INTEGER NOT NULL DEFAULT 1 CHECK (default_units_per_session >= 1),
+    start_date TEXT NOT NULL,
+    next_candidate_date TEXT,
+    definition_name_snapshot TEXT,
+    title_pattern_snapshot TEXT,
+    priority INTEGER NOT NULL DEFAULT 0,
+    allow_parallel_items INTEGER NOT NULL DEFAULT 0 CHECK (allow_parallel_items IN (0, 1)),
+    scheduling_policy TEXT,
+    duration_override_minutes INTEGER,
+    device_policy_override TEXT
+        CHECK (device_policy_override IS NULL OR device_policy_override IN ('ALLOWED', 'NOT_ALLOWED', 'CONFIRM')),
+    note TEXT,
+    completed_at TEXT,
+    version INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (current_ordinal >= start_ordinal),
+    CHECK (end_ordinal IS NULL OR current_ordinal <= end_ordinal + 1),
+    CHECK (generation_mode <> 'SEQUENCE' OR title_pattern_snapshot IS NOT NULL),
+    CHECK (generation_mode <> 'SEQUENCE' OR template_version_id IS NULL),
+    CHECK (generation_mode <> 'ITEMIZED' OR template_version_id IS NOT NULL)
+);
+
+INSERT INTO student_task_track_migrated (
+    id, student_id, template_id, template_version_id, generation_mode,
+    status, start_ordinal, current_ordinal, end_ordinal,
+    default_units_per_session, start_date, next_candidate_date,
+    definition_name_snapshot, title_pattern_snapshot, priority,
+    allow_parallel_items, scheduling_policy, duration_override_minutes,
+    device_policy_override, note, completed_at, version, created_at, updated_at
+)
+SELECT
+    id, student_id, template_id, template_version_id, 'ITEMIZED',
+    status, start_ordinal, current_ordinal, end_ordinal,
+    default_units_per_session, start_date, next_candidate_date,
+    NULL, NULL, priority,
+    allow_parallel_items, scheduling_policy, duration_override_minutes,
+    device_policy_override, note, completed_at, version, created_at, updated_at
+FROM student_task_track;
+
 CREATE TABLE task_instance (
     id TEXT PRIMARY KEY,
     student_id TEXT NOT NULL REFERENCES student(id) ON DELETE CASCADE,
     source_type TEXT NOT NULL CHECK (source_type IN ('TRACK', 'AD_HOC', 'IMPORT')),
-    track_id TEXT REFERENCES student_task_track(id) ON DELETE SET NULL,
+    track_id TEXT REFERENCES student_task_track_migrated(id) ON DELETE SET NULL,
     template_version_id TEXT REFERENCES task_template_version(id),
     template_item_id TEXT REFERENCES task_template_item(id),
     item_ordinal INTEGER,
@@ -111,64 +167,6 @@ CREATE UNIQUE INDEX uq_task_pending_track_ordinal
 CREATE UNIQUE INDEX uq_task_carry_target
     ON task_instance(carried_from_instance_id)
     WHERE carried_from_instance_id IS NOT NULL AND status <> 'CANCELLED';
-
--- ---------------------------------------------------------------------------
--- student_task_track: template_version_id and end_ordinal become nullable,
--- sequence tracks snapshot the definition they were mounted from.
--- ---------------------------------------------------------------------------
-
-CREATE TABLE student_task_track_migrated (
-    id TEXT PRIMARY KEY,
-    student_id TEXT NOT NULL REFERENCES student(id) ON DELETE CASCADE,
-    template_id TEXT NOT NULL REFERENCES task_template(id),
-    template_version_id TEXT REFERENCES task_template_version(id),
-    generation_mode TEXT NOT NULL DEFAULT 'ITEMIZED'
-        CHECK (generation_mode IN ('ITEMIZED', 'SEQUENCE')),
-    status TEXT NOT NULL DEFAULT 'ACTIVE'
-        CHECK (status IN ('NOT_STARTED', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED')),
-    start_ordinal INTEGER NOT NULL CHECK (start_ordinal >= 1),
-    current_ordinal INTEGER NOT NULL CHECK (current_ordinal >= 1),
-    end_ordinal INTEGER
-        CHECK (end_ordinal IS NULL OR end_ordinal >= start_ordinal),
-    default_units_per_session INTEGER NOT NULL DEFAULT 1 CHECK (default_units_per_session >= 1),
-    start_date TEXT NOT NULL,
-    next_candidate_date TEXT,
-    definition_name_snapshot TEXT,
-    title_pattern_snapshot TEXT,
-    priority INTEGER NOT NULL DEFAULT 0,
-    allow_parallel_items INTEGER NOT NULL DEFAULT 0 CHECK (allow_parallel_items IN (0, 1)),
-    scheduling_policy TEXT,
-    duration_override_minutes INTEGER,
-    device_policy_override TEXT
-        CHECK (device_policy_override IS NULL OR device_policy_override IN ('ALLOWED', 'NOT_ALLOWED', 'CONFIRM')),
-    note TEXT,
-    completed_at TEXT,
-    version INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (current_ordinal >= start_ordinal),
-    CHECK (end_ordinal IS NULL OR current_ordinal <= end_ordinal + 1),
-    CHECK (generation_mode <> 'SEQUENCE' OR title_pattern_snapshot IS NOT NULL),
-    CHECK (generation_mode <> 'SEQUENCE' OR template_version_id IS NULL),
-    CHECK (generation_mode <> 'ITEMIZED' OR template_version_id IS NOT NULL)
-);
-
-INSERT INTO student_task_track_migrated (
-    id, student_id, template_id, template_version_id, generation_mode,
-    status, start_ordinal, current_ordinal, end_ordinal,
-    default_units_per_session, start_date, next_candidate_date,
-    definition_name_snapshot, title_pattern_snapshot, priority,
-    allow_parallel_items, scheduling_policy, duration_override_minutes,
-    device_policy_override, note, completed_at, version, created_at, updated_at
-)
-SELECT
-    id, student_id, template_id, template_version_id, 'ITEMIZED',
-    status, start_ordinal, current_ordinal, end_ordinal,
-    default_units_per_session, start_date, next_candidate_date,
-    NULL, NULL, priority,
-    allow_parallel_items, scheduling_policy, duration_override_minutes,
-    device_policy_override, note, completed_at, version, created_at, updated_at
-FROM student_task_track;
 
 DROP TABLE student_task_track;
 

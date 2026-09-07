@@ -39,6 +39,7 @@ const taskSummarySchema = taskViewSchema
     locked: z.boolean().nullable().optional(),
     scheduledDate: z.string().nullable().optional(),
     ...taskCardContractFields,
+    note: taskViewSchema.shape.note.optional(),
   });
 
 const dayCellSchema = z.object({
