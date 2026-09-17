@@ -334,7 +334,7 @@ mod tests {
 
             for sql in [
                 "INSERT INTO student(id, student_code, name) VALUES ('student-1', 'S1', 'Student')",
-                "INSERT INTO task_template(id, template_code, name, subject_code, status) VALUES ('template-1', 'T1', 'Course', 'EN', 'ACTIVE')",
+                "INSERT INTO task_template(id, template_code, name, subject_code, status) VALUES ('template-1', 'T1', 'Template', 'EN', 'ACTIVE')",
                 "INSERT INTO task_template_version(id, template_id, version_number, status, item_count) VALUES ('version-1', 'template-1', 1, 'PUBLISHED', 1)",
                 "INSERT INTO task_template_item(id, template_version_id, ordinal, title) VALUES ('item-1', 'version-1', 1, 'Item 1')",
                 "INSERT INTO student_task_track(id, student_id, template_id, template_version_id, start_ordinal, current_ordinal, end_ordinal, start_date) VALUES ('track-1', 'student-1', 'template-1', 'version-1', 1, 1, 1, '2026-09-07')",
