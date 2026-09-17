@@ -62,6 +62,33 @@ Schema 由 `apps/desktop/src-tauri/migrations/` 中的 SQL 文件建立和更新
 
 发送文件统一放在忽略目录 `dist/preview-0.1.0-win-x64/`，包含 EXE、使用说明和 SHA-256；同级 ZIP 便于分发。测试版没有功能开关或试用期限，但尚未签名。每次交付只保留当前发送包，清理旧安装包、测试数据库、临时截图和脚本；源码回归测试保留。
 
+## macOS 安装包
+
+```bash
+pnpm build:desktop:mac-dmg
+```
+
+产物为 `apps/desktop/src-tauri/target/release/bundle/dmg/助教工作台.dmg`。
+
+DMG 里除了 `助教工作台.app` 和 `/Applications` 快捷方式，还有两个分发用的文件：
+
+- `首次打开说明.txt`：解释「已损坏，无法打开」的成因，并给出终端命令
+- `修复并打开.command`：一键完成「复制到应用程序 → 摘掉隔离标记 → 打开」
+
+不能直接用 `tauri build --bundles dmg`：Tauri 自带的 DMG 只放应用和快捷方式，而 `bundle.macOS.files` 的路径相对 `<app>.app/Contents` 解析，没法把文件放到 DMG 根目录。所以 `apps/desktop/scripts/build-macos-dmg.sh` 先让 Tauri 只产 `.app`，再用 `hdiutil` 组装 DMG，组装后还会挂载回读，确认四个条目都在、且应用仍带 ad-hoc 签名。
+
+没有 Apple 开发者账号，所以不做签名与公证。但 Apple Silicon 上「完全未签名」的二进制会被内核直接拒绝执行，用户看到的就是「已损坏」。因此 `apps/desktop/src-tauri/tauri.macos.conf.json` 里必须保留 ad-hoc 身份：
+
+```json
+"bundle": { "macOS": { "signingIdentity": "-" } }
+```
+
+这会让 Tauri 做 ad-hoc 签名：签名有效，但不是 Apple 签发，所以 Gatekeeper 仍会拦，需要用户自己摘掉隔离标记——这正是说明文件和脚本存在的原因。脚本会校验签名，一旦不是 ad-hoc 就立即失败，避免把打不开的包发出去。
+
+`targets` 在 macOS 上写的是 `["app"]` 而不是 `["dmg"]`，目的是强制走上面这条路径，避免误产出一个缺少说明文件的 DMG。
+
+只出 arm64：GitHub 已于 2025-09-19 下线 x86_64 的 macOS runner（Apple 停止支持该架构），`macos-latest` 是 arm64。
+
 ## 已退役的组件
 
 Spring/PostgreSQL/登录栈已在 F8 阶段移除。历史契约存档见 `docs/reference/retired-server/`，决策记录见 `docs/adr/ADR-002-local-desktop-runtime.md`。

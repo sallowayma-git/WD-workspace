@@ -35,7 +35,7 @@
     ],
     "windows": {
       "nsis": {
-        "installMode": "perMachine",
+        "installMode": "both",
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": false,
         "installerHooks": "./windows/installer-hooks.nsh"

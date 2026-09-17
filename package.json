@@ -14,6 +14,8 @@
     "build:preview": "pnpm --dir apps/desktop tauri build --no-bundle --config src-tauri/tauri.preview.conf.json",
     "build:web": "pnpm --dir apps/web build",
     "build:desktop:no-bundle": "pnpm --dir apps/desktop tauri build --no-bundle",
+    "build:desktop:nsis": "pnpm --dir apps/desktop tauri build --bundles nsis",
+    "build:desktop:mac-dmg": "pnpm --dir apps/desktop build:mac",
     "verify:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-desktop.ps1",
     "check": "pnpm run gate:web && pnpm run gate:desktop",
     "gate:web": "pnpm run format:check && pnpm run check:web && pnpm run check:packages && pnpm run test:web && pnpm run build:web",

@@ -58,4 +58,17 @@ SQLite 数据文件通常位于：
 %APPDATA%/com.wonderedu.assistant/assistant.db
 ```
 
+## 安装包
+
+CI 每次运行都会产出两个安装包，在对应 workflow run 页面的 Artifacts 里下载；也可以在 Actions 页面手动触发一次构建。
+
+| 平台        | 产物                                                               | 本地构建命令                 |
+| ----------- | ------------------------------------------------------------------ | ---------------------------- |
+| Windows x64 | NSIS 安装程序 `.exe`，安装向导里有目录选择页，可选当前用户或全机器 | `pnpm build:desktop:nsis`    |
+| macOS arm64 | `.dmg`，内含应用、`/Applications` 快捷方式、说明文件与一键修复脚本 | `pnpm build:desktop:mac-dmg` |
+
+两个安装包都没有代码签名：项目没有 Apple 开发者账号，也没有 Windows 代码签名证书。因此分发时同时提供 `.sha256` 校验值，用户可据此确认文件未被篡改。
+
+macOS 用户首次打开需要先摘掉隔离标记，否则系统会报「已损坏，无法打开」。原因、终端命令和一键脚本都写在 DMG 里的 `首次打开说明.txt`；脚本源码见 `apps/desktop/src-tauri/macos/`。
+
 迁移验收证据见 `docs/migration/flowclass/acceptance.md`。

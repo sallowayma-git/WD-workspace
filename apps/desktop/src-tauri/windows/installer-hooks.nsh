@@ -5,9 +5,11 @@
 ;   %APPDATA%\com.wonderedu.assistant\assistant.db。卸载时询问用户是否
 ;   一并删除全部本地数据，选“是”即完全清除式卸载，删除后不可恢复。
 ;
-; 注意：perMachine 卸载以管理员运行，NSIS 的 $APPDATA 会随
-; SetShellVarContext 指向 ProgramData；而应用数据固定在“安装用户”的
-; Roaming 目录，因此这里用 $PROFILE 定位，再对 $APPDATA 兜底一次。
+; 注意：installMode 为 both，安装与卸载既可能以当前用户身份运行（per-user，
+; 此时 $APPDATA 就是用户自己的 Roaming 目录），也可能以管理员身份运行
+; （per-machine，此时 SetShellVarContext 会让 $APPDATA 指向 ProgramData）。
+; 而应用数据固定在“安装用户”的 Roaming 目录，所以主路径用 $PROFILE 定位，
+; 再用 $APPDATA 兜底一次——两种模式下都能命中。
 ; WebView2 的用户数据目录在 %LOCALAPPDATA%\com.wonderedu.assistant，
 ; 一并纳入完全清除范围。
 

@@ -9,6 +9,13 @@
 * text=auto
 *.sql text eol=lf
 
+# Shell scripts must keep LF even on a Windows checkout: a CRLF shebang line
+# becomes `#!/bin/bash\r`, which macOS refuses to execute. `修复并打开.command`
+# ships inside the DMG, so a Windows-side CRLF would silently break the file
+# users are told to double-click.
+*.sh text eol=lf
+*.command text eol=lf
+
 # Binary assets: never touch.
 *.png binary
 *.ico binary
