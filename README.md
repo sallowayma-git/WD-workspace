@@ -1,8 +1,8 @@
 # 助教工作台
 
-助教工作台是单机 Tauri 桌面应用。学生、学习日、长期任务、课程模板、Track、任务、Today、矩阵、排期、生词、导入和日结数据均保存在本机 SQLite，不需要登录、Java、PostgreSQL 或远端 API。
+助教工作台是单机 Tauri 桌面应用。学生、学习日、长期任务、任务模板、Track、任务、Today、矩阵、排期、生词、导入和日结数据均保存在本机 SQLite，不需要登录、Java、PostgreSQL 或远端 API。
 
-长期任务（SEQUENCE）按「标题模板 + 序号」自动接排：挂载后学生完成一项，下一项出现在下一个可学习日；顺延保持序号不变。逐项定义的课程（ITEMIZED，Excel 导入）继续使用模板版本机制，见 `docs/adr/ADR-003-sequence-long-task.md`。
+长期任务（SEQUENCE）按「标题模板 + 序号」自动接排：挂载后学生完成一项，下一项出现在下一个可学习日；顺延保持序号不变。逐项定义的模板（ITEMIZED，Excel 导入）继续使用模板版本机制，见 `docs/adr/ADR-003-sequence-long-task.md`。
 
 ## 产品边界
 

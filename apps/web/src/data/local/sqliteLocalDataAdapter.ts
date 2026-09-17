@@ -135,8 +135,23 @@ export class SqliteLocalDataAdapter implements DataAdapter {
     return longTasks.listLongTasks(this.core, query);
   }
 
+  getLongTask(templateId: string): Promise<unknown> {
+    return longTasks.getLongTask(this.core, templateId);
+  }
+
   createLongTask(input: Record<string, unknown>): Promise<unknown> {
     return longTasks.createLongTask(this.core, input);
+  }
+
+  updateLongTask(
+    templateId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    return longTasks.updateLongTask(this.core, templateId, input);
+  }
+
+  deleteLongTask(templateId: string): Promise<unknown> {
+    return longTasks.deleteLongTask(this.core, templateId);
   }
 
   mountLongTask(input: Record<string, unknown>): Promise<unknown> {

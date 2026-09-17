@@ -30,6 +30,10 @@ const navigation = [
 export function AppShell() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // 快速添加面板是浮层，展开时会盖住内容区首元素顶部的文字。这里按面板
+  // 实际高度撑出等高占位，把内容整体顶下去——展开/收起只影响这一处留白，
+  // 不碰顶栏 grid 的三列布局（那会重新引入切页标签栏错位）。
+  const [quickAddHeight, setQuickAddHeight] = useState(0);
   const { message } = App.useApp();
 
   async function exportData() {
@@ -97,7 +101,7 @@ export function AppShell() {
         </nav>
         <Space className="top-navigation-actions">
           {/* 快速添加放在全局搜索左侧：学生名/日期自动匹配后一键建任务。 */}
-          <GlobalQuickAdd />
+          <GlobalQuickAdd onPanelHeightChange={setQuickAddHeight} />
           <Tooltip title="全局搜索 (Ctrl/Cmd+K)">
             <Button
               aria-label="打开全局搜索"
@@ -132,6 +136,11 @@ export function AppShell() {
           ) : null}
         </Space>
       </Layout.Header>
+      <div
+        className="quick-add-spacer"
+        style={{ height: quickAddHeight }}
+        aria-hidden="true"
+      />
       <Layout.Content className="app-content">
         <Outlet />
       </Layout.Content>

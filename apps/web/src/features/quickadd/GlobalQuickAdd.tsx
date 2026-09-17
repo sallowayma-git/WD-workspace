@@ -28,17 +28,43 @@ interface DateToken {
  * 之后的剩余文本，回车创建；没有内容时回车删除最后一个胶囊；双击胶囊
  * 去除对应匹配。
  */
-export function GlobalQuickAdd() {
+interface GlobalQuickAddProps {
+  /**
+   * 展开时上报面板实际高度。面板是绝对定位的浮层，默认会盖住内容区首元素
+   * 顶部的文字；外壳用这个高度撑出等高占位把内容顶下去，从而不遮挡。
+   */
+  onPanelHeightChange?: (height: number) => void;
+}
+
+export function GlobalQuickAdd({
+  onPanelHeightChange,
+}: GlobalQuickAddProps = {}) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [studentToken, setStudentToken] = useState<StudentToken | null>(null);
   const [dateToken, setDateToken] = useState<DateToken | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const anchorRef = useRef<HTMLSpanElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const { message } = App.useApp();
   const { offerSeriesSuggestion } = useSeriesSuggestion();
   const today = useBusinessDate();
+
+  // 面板高度随胶囊换行变化，用 ResizeObserver 持续上报；收起时归零。
+  useEffect(() => {
+    if (!onPanelHeightChange) return;
+    const panel = panelRef.current;
+    if (!open || !panel) {
+      onPanelHeightChange(0);
+      return;
+    }
+    const report = () => onPanelHeightChange(panel.offsetHeight);
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [open, onPanelHeightChange]);
 
   const studentsQuery = useQuery({
     queryKey: ["students", ""],
@@ -107,6 +133,10 @@ export function GlobalQuickAdd() {
 
   // 每次输入变化都把文本里的日期与学生片段"吸"成胶囊（滴答清单式）。
   // 胶囊内容从文本中移除，输入框里只剩任务内容。
+  //
+  // 这里刻意不做 cleanTitle：它会在每次按键时把用户刚敲下的空格/分隔符
+  // 立刻删掉（受控 input 被写回清洗后的值），结果就是"打不出空格、字打不
+  // 进去"。输入态只压平连续空白并去掉行首空白，真正的标题清洗留到提交时。
   const handleChange = (raw: string) => {
     let working = raw;
     const dateHit = findDateToken(raw, today);
@@ -119,7 +149,7 @@ export function GlobalQuickAdd() {
       working = `${working.slice(0, top.index)} ${working.slice(top.index + top.length)}`;
       setStudentToken({ studentId: top.student.id, label: top.student.name });
     }
-    setText(cleanTitle(working));
+    setText(working.replace(/\s+/g, " ").trimStart());
   };
 
   const removeLastToken = () => {
@@ -128,7 +158,9 @@ export function GlobalQuickAdd() {
   };
 
   const submit = () => {
-    const title = text.trim();
+    // 标题清洗只在提交时做一次：摘掉"给/为/帮/在/于"这类句式连接词与
+    // 两端残留的分隔符，用户输入过程中看到的一直是自己敲的原文。
+    const title = cleanTitle(text);
     if (title.length === 0) {
       // 约定：没有任务内容时回车 = 删除最后一个胶囊（用户口头需求）。
       removeLastToken();
@@ -149,7 +181,12 @@ export function GlobalQuickAdd() {
   return (
     <span ref={anchorRef} className="quick-add-anchor">
       {open ? (
-        <div className="quick-add-panel" role="group" aria-label="快速添加任务">
+        <div
+          ref={panelRef}
+          className="quick-add-panel"
+          role="group"
+          aria-label="快速添加任务"
+        >
           <div className="quick-add-row">
             <div
               className="quick-add-field"
@@ -183,7 +220,7 @@ export function GlobalQuickAdd() {
                 placeholder={
                   studentToken || dateToken
                     ? "输入任务内容，回车添加"
-                    : "学生名 + 日期 + 任务，如：林同学 明天/0831 密卷08"
+                    : "如：林同学 明天 密卷08"
                 }
                 onChange={(event) => handleChange(event.target.value)}
                 onKeyDown={(event) => {

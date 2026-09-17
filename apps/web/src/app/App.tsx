@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { ImportPage } from "../features/importexport/ImportPage";
+import { LongTaskDetailPage } from "../features/longtasks/LongTaskDetailPage";
 import { LongTaskListPage } from "../features/longtasks/LongTaskListPage";
 import { StudentSchedulePage } from "../features/schedule/StudentSchedulePage";
 import { StudentListPage } from "../features/students/StudentListPage";
@@ -32,7 +33,11 @@ export function App() {
         <Route path="/students" element={<StudentListPage />} />
         <Route path="/workbench" element={<StudentWorkbenchPage />} />
         <Route path="/long-tasks" element={<LongTaskListPage />} />
-        {/* 课程模板（ITEMIZED）是 Excel 导入等高级场景的入口，保留路由但
+        <Route
+          path="/long-tasks/:longTaskId"
+          element={<LongTaskDetailPage />}
+        />
+        {/* 任务模板（ITEMIZED）是 Excel 导入等高级场景的入口，保留路由但
             不进主导航；普通助教的主要路径是长期任务。 */}
         <Route path="/templates" element={<TemplateListPage />} />
         <Route path="/templates/:templateId" element={<TemplateDetailPage />} />

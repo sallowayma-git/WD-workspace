@@ -89,7 +89,7 @@ export function InlineTaskComposer({
     if (template.currentPublishedVersionId) {
       options.push({
         value: `__template__:${template.id}`,
-        label: `安排课程：${template.name}`,
+        label: `挂载任务模板：${template.name}`,
         kind: "template",
         template,
       });
@@ -113,7 +113,7 @@ export function InlineTaskComposer({
         aria-label={studentName ? `为 ${studentName} 新增任务` : "新增任务"}
         value={value}
         options={options}
-        placeholder="任务标题或课程名称"
+        placeholder="任务标题或模板名称"
         defaultActiveFirstOption={false}
         onChange={(next, option) => {
           if (

@@ -237,4 +237,44 @@ describe("GlobalQuickAdd", () => {
     // 日期胶囊不受影响。
     expect(screen.getByText("明天")).toBeVisible();
   });
+
+  it("keeps the spaces the user types so multi-word titles survive", async () => {
+    const user = userEvent.setup({ delay: null });
+    const createAdHocTask = vi.fn(
+      (input: { scheduledDate: string; title: string }) =>
+        Promise.resolve(adHocTaskView(input.scheduledDate, input.title)),
+    );
+    setDataAdapterForTests({
+      listStudents: () =>
+        Promise.resolve({
+          items: [studentView(LIN, "林同学", "S001")],
+          page: 0,
+          size: 1,
+          total: 1,
+          hasNext: false,
+        }),
+      createAdHocTask,
+    } as unknown as DataAdapter);
+    renderQuickAdd();
+
+    await user.click(screen.getByRole("button", { name: "快速添加" }));
+    const input = screen.getByLabelText("快速添加任务输入");
+    await user.type(input, "林同学 密卷08 阅读 两篇");
+
+    expect(await screen.findByText("林同学")).toBeVisible();
+    // 学生被吸成胶囊后，任务内容里的空格必须原样留在输入框里。旧实现每次
+    // 按键都跑 cleanTitle 再把结果写回受控 input，尾部空格会被立刻删掉，
+    // 于是多词标题根本打不出来（表现为"输入的字显示不出来"）。
+    expect(input).toHaveValue("密卷08 阅读 两篇");
+
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(createAdHocTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          studentId: LIN,
+          title: "密卷08 阅读 两篇",
+        }),
+      ),
+    );
+  });
 });

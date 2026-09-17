@@ -471,7 +471,7 @@ export function StudentProfilePage() {
               <Button type="primary" onClick={() => setLongTaskMountOpen(true)}>
                 挂载长期任务
               </Button>
-              <Button onClick={() => setMountOpen(true)}>挂载课程模板</Button>
+              <Button onClick={() => setMountOpen(true)}>挂载任务模板</Button>
             </Space>
           }
         >

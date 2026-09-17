@@ -70,3 +70,17 @@
   user-select: none;
   margin-inline-end: 0;
 }
+
+/* 展开时把内容区顶下去的等高占位（高度由面板实测值驱动）。
+   没有它的话，绝对定位的面板会盖住内容区首元素顶部的文字。 */
+.quick-add-spacer {
+  height: 0;
+  background: #eef3f8;
+  transition: height 0.18s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quick-add-spacer {
+    transition: none;
+  }
+}

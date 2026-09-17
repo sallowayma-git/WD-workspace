@@ -124,6 +124,139 @@ export async function createLongTask(
   return longTaskView(await getLongTaskRow(core, id));
 }
 
+/** 单个长期任务定义（编辑页读取用）。 */
+export async function getLongTask(
+  core: LocalCore,
+  templateId: string,
+): Promise<unknown> {
+  return longTaskView(await getLongTaskRow(core, templateId));
+}
+
+/**
+ * 编辑长期任务定义。已挂载学生的轨道持有名称/标题模板/起止序号快照，编辑
+ * 定义不会回写他们的历史任务——改的是"以后新挂载的人看到什么"。
+ */
+export async function updateLongTask(
+  core: LocalCore,
+  templateId: string,
+  input: Record<string, unknown>,
+): Promise<unknown> {
+  const existing = await getLongTaskRow(core, templateId);
+  if (text(existing, "generation_mode") !== "SEQUENCE") {
+    throw new ApiError(
+      422,
+      "该任务定义不是长期任务（序号生成型）",
+      "LONG_TASK_MODE_MISMATCH",
+    );
+  }
+  const shape = sequencePatternFromTitle(requiredString(input, "sampleTitle"));
+  const startOrdinal =
+    record(input, "startOrdinal") != null
+      ? requiredNumber(input, "startOrdinal")
+      : (shape.detectedOrdinal ??
+        numberValue(existing, "default_start_ordinal"));
+  const endOrdinal =
+    record(input, "endOrdinal") != null
+      ? requiredNumber(input, "endOrdinal")
+      : null;
+  if (startOrdinal < 1) {
+    throw new ApiError(422, "起始序号必须大于 0", "LONG_TASK_ORDINAL_INVALID");
+  }
+  if (endOrdinal != null && endOrdinal < startOrdinal) {
+    throw new ApiError(
+      422,
+      "结束序号不能小于起始序号",
+      "LONG_TASK_END_BEFORE_START",
+    );
+  }
+  // 归一键在 ACTIVE 定义间必须唯一；命中自己说明只是改了序号，不算冲突。
+  const conflict = await findSequenceDefinitionByKey(core, shape.normalizedKey);
+  if (conflict && text(conflict, "id") !== templateId) {
+    throw new ApiError(409, "已存在同名长期任务", "LONG_TASK_ALREADY_EXISTS");
+  }
+  try {
+    await core.storage.transaction([
+      {
+        sql: `UPDATE task_template SET
+          name = $1, normalized_key = $2, title_pattern = $3,
+          default_start_ordinal = $4, sequence_end_ordinal = $5,
+          default_duration_minutes = $6, version = version + 1, updated_at = $7
+        WHERE id = $8 AND version = $9`,
+        values: [
+          shape.name,
+          shape.normalizedKey,
+          shape.pattern,
+          startOrdinal,
+          endOrdinal,
+          nullableInputNumber(input, "defaultDurationMinutes"),
+          now(),
+          templateId,
+          numberValue(existing, "version"),
+        ],
+        expectedRowsAffected: 1,
+      },
+    ]);
+  } catch (error) {
+    localError(error);
+  }
+  return longTaskView(await getLongTaskRow(core, templateId));
+}
+
+export interface DeleteLongTaskResult {
+  /** DELETED = 物理删除；ARCHIVED = 有挂载历史，退化为归档。 */
+  mode: "DELETED" | "ARCHIVED";
+  /** 引用该定义的学生轨道数（含已结束的历史轨道）。 */
+  trackCount: number;
+}
+
+/**
+ * 删除长期任务定义。student_task_track.template_id 没有 ON DELETE CASCADE，
+ * 而且物理删除会连带毁掉学生已经完成的历史任务——所以只要被挂载过就退化为
+ * 归档（status='ARCHIVED'，listLongTasks 已过滤该状态），列表里立刻消失，
+ * 历史轨道保持可读。没有任何轨道引用时才真正删除。
+ */
+export async function deleteLongTask(
+  core: LocalCore,
+  templateId: string,
+): Promise<DeleteLongTaskResult> {
+  const existing = await getLongTaskRow(core, templateId);
+  if (text(existing, "generation_mode") !== "SEQUENCE") {
+    throw new ApiError(
+      422,
+      "该任务定义不是长期任务（序号生成型）",
+      "LONG_TASK_MODE_MISMATCH",
+    );
+  }
+  const counted = await core.storage.select<DbRow>(
+    "SELECT COUNT(*) AS track_count FROM student_task_track WHERE template_id = $1",
+    [templateId],
+  );
+  const trackCount = counted[0] ? numberValue(counted[0], "track_count") : 0;
+  try {
+    await core.storage.transaction(
+      trackCount > 0
+        ? [
+            {
+              sql: `UPDATE task_template SET status = 'ARCHIVED',
+                version = version + 1, updated_at = $1 WHERE id = $2`,
+              values: [now(), templateId],
+              expectedRowsAffected: 1,
+            },
+          ]
+        : [
+            {
+              sql: "DELETE FROM task_template WHERE id = $1",
+              values: [templateId],
+              expectedRowsAffected: 1,
+            },
+          ],
+    );
+  } catch (error) {
+    localError(error);
+  }
+  return { mode: trackCount > 0 ? "ARCHIVED" : "DELETED", trackCount };
+}
+
 export async function mountLongTask(
   core: LocalCore,
   input: Record<string, unknown>,

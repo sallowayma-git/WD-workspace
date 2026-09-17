@@ -14,10 +14,10 @@ function task(fields: Partial<TaskLike>): TaskLike {
   };
 }
 
-// 「第 N 节」是排课工具的说法，这不是排课工具（§8）。逐项课程显示「第 N 项」；
+// 「第 N 节」是排课工具的说法，这不是排课工具（§8）。逐项模板显示「第 N 项」；
 // 长期任务的标题本身就是 Day 7，不再挂一个说同一个数字的标签。
 describe("itemOrdinalLabel", () => {
-  it("labels an itemized course item 第 N 项", () => {
+  it("labels an itemized template item 第 N 项", () => {
     expect(
       itemOrdinalLabel(task({ title: "定语从句精讲", itemOrdinal: 7 })),
     ).toBe("第7项");

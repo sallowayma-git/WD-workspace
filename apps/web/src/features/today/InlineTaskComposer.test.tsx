@@ -15,7 +15,7 @@ vi.mock("../templates/templateApi", () => ({
   listTemplates: vi.fn().mockResolvedValue({ items: [] }),
 }));
 vi.mock("../planning/MountTrackModal", () => ({
-  MountTrackModal: vi.fn(() => <div>课程安排表单</div>),
+  MountTrackModal: vi.fn(() => <div>挂载任务模板表单</div>),
 }));
 
 describe("InlineTaskComposer", () => {
@@ -63,15 +63,15 @@ describe("InlineTaskComposer", () => {
     expect(onCreated).toHaveBeenCalledTimes(1);
   });
 
-  it("selects a course with the keyboard without also creating a task", async () => {
+  it("selects a task template with the keyboard without also creating a task", async () => {
     const user = userEvent.setup();
-    const course = {
-      id: "course-1",
-      name: "阅读课程",
+    const itemizedTemplate = {
+      id: "template-1",
+      name: "阅读模板",
       currentPublishedVersionId: "version-1",
     } as TaskTemplate;
     vi.mocked(listTemplates).mockResolvedValue({
-      items: [course],
+      items: [itemizedTemplate],
       page: 0,
       size: 1,
       total: 1,
@@ -83,17 +83,17 @@ describe("InlineTaskComposer", () => {
       </QueryClientProvider>,
     );
     await user.type(screen.getByRole("combobox"), "阅读");
-    await screen.findByText("安排课程：阅读课程");
+    await screen.findByText("挂载任务模板：阅读模板");
     const input = screen.getByRole("combobox");
     // rc-select reads the native legacy key code for option navigation.
     fireEvent.keyDown(input, { key: "ArrowDown", keyCode: 40, which: 40 });
     fireEvent.keyDown(input, { key: "ArrowDown", keyCode: 40, which: 40 });
     fireEvent.keyDown(input, { key: "Enter", keyCode: 13, which: 13 });
-    await screen.findByText("课程安排表单");
+    await screen.findByText("挂载任务模板表单");
     expect(createAdHocTask).not.toHaveBeenCalled();
     expect(vi.mocked(MountTrackModal).mock.calls.at(-1)?.[0]).toMatchObject({
       studentId: "student-1",
-      initialTemplateId: "course-1",
+      initialTemplateId: "template-1",
       anchorDate: "2026-09-10",
       open: true,
     });

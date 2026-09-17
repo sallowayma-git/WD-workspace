@@ -48,7 +48,13 @@ export interface DataAdapter {
   mountTrack(input: Record<string, unknown>): Promise<unknown>;
 
   listLongTasks(query?: string): Promise<unknown>;
+  getLongTask(templateId: string): Promise<unknown>;
   createLongTask(input: Record<string, unknown>): Promise<unknown>;
+  updateLongTask(
+    templateId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown>;
+  deleteLongTask(templateId: string): Promise<unknown>;
   mountLongTask(input: Record<string, unknown>): Promise<unknown>;
   convertTaskToLongTask(
     taskId: string,

@@ -137,14 +137,14 @@ export function MountTrackModal({
 
   return (
     <Modal
-      title="安排课程"
+      title="挂载任务模板"
       open={open}
       onCancel={() => {
         form.resetFields();
         onClose();
       }}
       onOk={handleSubmit}
-      okText="安排"
+      okText="挂载"
       confirmLoading={mountMutation.isPending}
       okButtonProps={{ disabled: !templateId || !versionId }}
       destroyOnHidden
@@ -259,7 +259,7 @@ export function MountTrackModal({
         <Alert
           type="error"
           showIcon
-          message="安排失败"
+          message="挂载失败"
           description={mountMutation.error?.message ?? "未知错误"}
           style={{ marginTop: 8 }}
         />

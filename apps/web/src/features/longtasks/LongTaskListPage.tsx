@@ -21,7 +21,7 @@ import { CreateLongTaskModal } from "./CreateLongTaskModal";
 
 /**
  * 长期任务列表。用户视角只有：名称、怎么接排、多少学生在用、状态——模板编码/
- * 版本/发布状态是课程模板（ITEMIZED）的内部概念，标题模板里的 {n} 占位符是
+ * 版本/发布状态是任务模板（ITEMIZED）的内部概念，标题模板里的 {n} 占位符是
  * 实现细节，两者都不在这里出现。
  */
 export function LongTaskListPage() {
@@ -76,8 +76,9 @@ export function LongTaskListPage() {
       <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
         <Typography.Text type="secondary">
           长期任务按「标题 + 序号」自动接排：学生完成一项，下一项出现在下一个
-          可学习日。给某个学生挂载入口在学生资料页；逐项定义的课程（Excel
-          导入）仍在 <Link to="/templates">课程模板</Link> 管理。
+          可学习日。点任务名可以改接排设置或删除它。给某个学生挂载入口在学生
+          资料页；逐项定义的模板（Excel 导入）仍在{" "}
+          <Link to="/templates">任务模板</Link> 管理。
         </Typography.Text>
         <Space.Compact style={{ width: "min(100%, 420px)" }}>
           <Input
@@ -107,8 +108,10 @@ export function LongTaskListPage() {
               {
                 title: "长期任务",
                 dataIndex: "name",
-                render: (name: string) => (
-                  <Typography.Text strong>{name}</Typography.Text>
+                render: (name: string, record: LongTask) => (
+                  <Link to={`/long-tasks/${record.id}`}>
+                    <Typography.Text strong>{name}</Typography.Text>
+                  </Link>
                 ),
               },
               {
@@ -138,6 +141,13 @@ export function LongTaskListPage() {
                   ) : (
                     <Tag>{status === "RETIRED" ? "已停用" : status}</Tag>
                   ),
+              },
+              {
+                title: "操作",
+                width: 90,
+                render: (_: unknown, record: LongTask) => (
+                  <Link to={`/long-tasks/${record.id}`}>编辑</Link>
+                ),
               },
             ]}
           />

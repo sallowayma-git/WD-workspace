@@ -870,10 +870,10 @@ describe("SqliteLocalDataAdapter", () => {
     ).resolves.toMatchObject({ titleSnapshot: "阅读复盘", note: "" });
   });
 
-  it("keeps sequence definitions out of course selectors and searches", async () => {
+  it("keeps sequence definitions out of template selectors and searches", async () => {
     storage = new NodeSqliteStorage();
     const adapter = new SqliteLocalDataAdapter(storage);
-    const course = (await adapter.createTemplate({
+    const itemizedTemplate = (await adapter.createTemplate({
       name: "阅读 Day",
       unitLabel: "项",
     })) as { id: string };
@@ -882,7 +882,9 @@ describe("SqliteLocalDataAdapter", () => {
       const result = (await adapter.listTemplates(query)) as {
         items: Array<{ id: string }>;
       };
-      expect(result.items.map((item) => item.id)).toEqual([course.id]);
+      expect(result.items.map((item) => item.id)).toEqual([
+        itemizedTemplate.id,
+      ]);
     }
     await expect(adapter.listTemplates("LT-")).resolves.toMatchObject({
       items: [],
@@ -2887,5 +2889,127 @@ describe("SqliteLocalDataAdapter", () => {
       idempotencyKey: crypto.randomUUID(),
     });
     expect(await suggestionsFor(mounted.id)).toHaveLength(0);
+  });
+
+  it("edits a long task, then deletes it or falls back to archiving when students used it", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+
+    // 没有任何学生挂载过：改定义直接生效，删除是物理删除。
+    const created = (await adapter.createLongTask({
+      sampleTitle: "密卷1",
+      startOrdinal: 1,
+      endOrdinal: 33,
+      idempotencyKey: crypto.randomUUID(),
+    })) as {
+      id: string;
+      name: string;
+      titlePattern: string;
+      version: number;
+    };
+    expect(created).toMatchObject({ name: "密卷", titlePattern: "密卷{n}" });
+
+    const edited = (await adapter.updateLongTask(created.id, {
+      sampleTitle: "密卷5",
+      startOrdinal: 5,
+      endOrdinal: 40,
+      defaultDurationMinutes: 30,
+    })) as {
+      name: string;
+      titlePattern: string;
+      defaultStartOrdinal: number;
+      endOrdinal: number | null;
+      defaultDurationMinutes: number | null;
+      version: number;
+    };
+    expect(edited).toMatchObject({
+      name: "密卷",
+      titlePattern: "密卷{n}",
+      defaultStartOrdinal: 5,
+      endOrdinal: 40,
+      defaultDurationMinutes: 30,
+      version: created.version + 1,
+    });
+
+    // 换标题即换模板与显示名，和新建走同一套解析规则。
+    const renamed = (await adapter.updateLongTask(created.id, {
+      sampleTitle: "听力精练 Day 1",
+      startOrdinal: 1,
+      endOrdinal: null,
+    })) as { name: string; titlePattern: string; endOrdinal: number | null };
+    expect(renamed).toMatchObject({
+      name: "听力精练",
+      titlePattern: "听力精练 Day {n}",
+      endOrdinal: null,
+    });
+
+    // 区间反了要挡住，不能把定义写成永远排不出来的状态。
+    await expect(
+      adapter.updateLongTask(created.id, {
+        sampleTitle: "听力精练 Day 1",
+        startOrdinal: 10,
+        endOrdinal: 3,
+      }),
+    ).rejects.toBeInstanceOf(ApiError);
+
+    // 改名撞上另一个 ACTIVE 定义要报冲突。
+    const other = (await adapter.createLongTask({
+      sampleTitle: "阅读1",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    await expect(
+      adapter.updateLongTask(other.id, { sampleTitle: "听力精练 Day 1" }),
+    ).rejects.toBeInstanceOf(ApiError);
+
+    await expect(adapter.deleteLongTask(created.id)).resolves.toEqual({
+      mode: "DELETED",
+      trackCount: 0,
+    });
+    const afterDelete = (await adapter.listLongTasks()) as {
+      items: { id: string }[];
+    };
+    expect(afterDelete.items.map((item) => item.id)).not.toContain(created.id);
+
+    // 有学生挂载过：删除退化为归档，定义行与轨道历史都必须留着。
+    const mountedTask = (await adapter.createLongTask({
+      sampleTitle: "真题精讲1",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    const student = await setupSequenceStudent(adapter, "S901");
+    await adapter.mountLongTask({
+      studentId: student.id,
+      longTaskId: mountedTask.id,
+      currentOrdinal: 1,
+      anchorDate: "2026-08-17",
+      idempotencyKey: crypto.randomUUID(),
+    });
+
+    await expect(adapter.deleteLongTask(mountedTask.id)).resolves.toEqual({
+      mode: "ARCHIVED",
+      trackCount: 1,
+    });
+    const listed = (await adapter.listLongTasks()) as {
+      items: { id: string }[];
+    };
+    expect(listed.items.map((item) => item.id)).not.toContain(mountedTask.id);
+
+    const definitionRows = await storage.select<{ status: string }>(
+      "SELECT status FROM task_template WHERE id = $1",
+      [mountedTask.id],
+    );
+    expect(definitionRows[0].status).toBe("ARCHIVED");
+    const trackRows = await storage.select<{ id: string }>(
+      "SELECT id FROM student_task_track WHERE template_id = $1",
+      [mountedTask.id],
+    );
+    expect(trackRows).toHaveLength(1);
+
+    // 归档后同名可以重新建：查找只认 ACTIVE 定义。
+    const recreated = (await adapter.createLongTask({
+      sampleTitle: "真题精讲1",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string; name: string };
+    expect(recreated.name).toBe("真题精讲");
+    expect(recreated.id).not.toBe(mountedTask.id);
   });
 });

@@ -4,7 +4,7 @@ import { trackSchema, type Track } from "../planning/trackApi";
 
 /**
  * 长期任务（SEQUENCE）前端契约。定义层用户只应看到：名称、标题模板、
- * 起止序号、使用人数——模板编码 / 版本 / 发布状态是 ITEMIZED 课程模板的
+ * 起止序号、使用人数——模板编码 / 版本 / 发布状态是 ITEMIZED 任务模板的
  * 内部概念，不出现在长期任务里。
  */
 export const longTaskSchema = z.object({
@@ -34,6 +34,12 @@ export function listLongTasks(query?: string): Promise<LongTask[]> {
     .then((value) => longTaskListSchema.parse(value).items);
 }
 
+export function getLongTask(longTaskId: string): Promise<LongTask> {
+  return getDataAdapter()
+    .getLongTask(longTaskId)
+    .then((value) => longTaskSchema.parse(value));
+}
+
 export function createLongTask(input: {
   sampleTitle: string;
   startOrdinal?: number;
@@ -48,6 +54,41 @@ export function createLongTask(input: {
       idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
     })
     .then((value) => longTaskSchema.parse(value));
+}
+
+export function updateLongTask(
+  longTaskId: string,
+  input: {
+    sampleTitle: string;
+    startOrdinal?: number;
+    endOrdinal?: number | null;
+    defaultDurationMinutes?: number | null;
+  },
+): Promise<LongTask> {
+  return getDataAdapter()
+    .updateLongTask(longTaskId, {
+      sampleTitle: input.sampleTitle,
+      startOrdinal: input.startOrdinal ?? null,
+      endOrdinal: input.endOrdinal ?? null,
+      defaultDurationMinutes: input.defaultDurationMinutes ?? null,
+    })
+    .then((value) => longTaskSchema.parse(value));
+}
+
+const deleteLongTaskResultSchema = z.object({
+  mode: z.enum(["DELETED", "ARCHIVED"]),
+  trackCount: z.number(),
+});
+
+export type DeleteLongTaskResult = z.infer<typeof deleteLongTaskResultSchema>;
+
+/** 删除长期任务；被学生挂载过时后端退化为归档，结果里带 mode 说明。 */
+export function deleteLongTask(
+  longTaskId: string,
+): Promise<DeleteLongTaskResult> {
+  return getDataAdapter()
+    .deleteLongTask(longTaskId)
+    .then((value) => deleteLongTaskResultSchema.parse(value));
 }
 
 export function mountLongTask(input: {

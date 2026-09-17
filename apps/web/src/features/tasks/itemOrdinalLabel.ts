@@ -2,7 +2,7 @@ import { parseSeriesTitle } from "../../domain/task/seriesTitle";
 import type { TaskLike } from "./taskApi";
 
 /**
- * 序号标签文案。这不是排课工具，「第 N 节」是错的——逐项定义的课程
+ * 序号标签文案。这不是排课工具，「第 N 节」是错的——逐项定义的模板
  * （ITEMIZED，Excel 导入）显示「第 N 项」。
  *
  * 长期任务（SEQUENCE）的标题本身就是按 {n} 渲染出来的，「一天一句长难句
