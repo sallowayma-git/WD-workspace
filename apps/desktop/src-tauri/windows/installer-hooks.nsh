@@ -12,6 +12,13 @@
 ; 再用 $APPDATA 兜底一次——两种模式下都能命中。
 ; WebView2 的用户数据目录在 %LOCALAPPDATA%\com.wonderedu.assistant，
 ; 一并纳入完全清除范围。
+;
+; 这三条路径不是猜的，是照着应用自己的路径解析核对过的：应用用
+; app_config_dir() 定位数据目录，而 tauri 的 app_config_dir() =
+; dirs::config_dir()/{identifier}；在 Windows 上 dirs::config_dir() 和
+; dirs::data_dir() 都指向 known_folder_roaming_app_data（即 %APPDATA%），
+; dirs::data_local_dir() 指向 %LOCALAPPDATA%。所以上面三条 RMDir 正好覆盖
+; 应用实际写入的位置。改这里之前先回去确认应用的取路径方式没变。
 
 !macro NSIS_HOOK_PREUNINSTALL
   MessageBox MB_YESNO|MB_ICONQUESTION "是否同时删除全部本地数据（含 SQLite 数据库与学习记录）？$\r$\n$\r$\n[是] 完全清除式卸载，删除 $PROFILE\AppData\Roaming\com.wonderedu.assistant，不可恢复。$\r$\n[否] 仅卸载程序，保留数据，重装后可继续使用。" IDYES wd_wipe_data
