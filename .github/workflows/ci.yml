@@ -23,6 +23,33 @@ permissions:
   contents: read
 
 jobs:
+  # 最便宜的一道校验，放在最前面：版本号对不上，就不必再花二十分钟去编译。
+  #
+  # 版本号在仓库里重复了 7 处，而安装包文件名取自 tauri.conf.json（DMG 由
+  # build-macos-dmg.sh 读它，NSIS 由 Tauri 自己读它）。标签和它一旦不一致，就会
+  # 打出一个叫 助教工作台_0.1.0_aarch64.dmg 的包、却挂到 v0.2.0 的 Release 上，
+  # 而且从文件名本身完全看不出来。desktop 和 macos 都 needs 它，所以它是打包的
+  # 硬前置——校验不过，两个平台都不会开始编译。
+  #
+  # 它在 PR 和 main 推送时也照跑，那时做的是仓库内部的版本一致性检查（7 处版本号
+  # 有没有互相漂移），不是空转。一致性检查在 gate:web 里也有一份——那是为了让
+  # 本地 pnpm check 和 CI 保持一致；这里再跑一遍只花不到一秒，换来的是「版本号
+  # 不对就别开始编译」。
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.15.0
+      # 两个分支互斥，只会跑一个。--expect-tag 那次本身也会做一致性检查，
+      # 所以不需要先跑一遍普通的再跑一遍带标签的。
+      - if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: node scripts/check-versions.mjs
+      # 打标签时再加一道：标签（v0.2.0）必须和仓库里的版本号（0.2.0）相等。
+      - if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/check-versions.mjs --expect-tag "${GITHUB_REF_NAME}"
+
   web:
     runs-on: ubuntu-latest
     steps:
@@ -40,8 +67,9 @@ jobs:
       # here (that split is what let a format:check failure land on main).
       # Do not re-list the individual steps in this file.
       #
-      # gate:web = format:check -> check:web -> check:packages -> test:web ->
-      # build:web. check:web runs the local-runtime guard first: it walks the
+      # gate:web = format:check -> check:versions -> check:web -> check:packages
+      # -> test:web -> build:web. check:versions 保证仓库里 7 处版本号没有互相漂移。
+      # check:web runs the local-runtime guard first: it walks the
       # import graph from main.tsx and fails if the product entry can reach an
       # HTTP transport, an auth store or a bare fetch() again (ACC-001/ACC-003).
       - run: pnpm run gate:web
@@ -57,6 +85,7 @@ jobs:
   #
   # NSIS 的 installMode 为 both，安装向导里有目录选择页，用户可以自定义安装位置。
   desktop:
+    needs: [preflight]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -112,6 +141,7 @@ jobs:
   # runner（Apple 停止支持该架构），所以这里只出 arm64 安装包。
   macos:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: [preflight]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7

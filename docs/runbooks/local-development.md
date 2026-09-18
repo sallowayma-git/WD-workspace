@@ -98,14 +98,29 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-推标签后 `.github/workflows/ci.yml` 会做三件事，顺序是硬性的：
+推标签后 `.github/workflows/ci.yml` 会做这些事，顺序是硬性的：
 
+0. `preflight` 先跑 `node scripts/check-versions.mjs`：确认仓库里 7 处版本号彼此一致，
+   并确认标签（`v0.2.0` → `0.2.0`）等于 `tauri.conf.json` 里的 `version`。
+   `desktop` 和 `macos` 都 `needs` 它，所以这一步不过，两个平台根本不会开始编译。
 1. `web` 跑 `gate:web`；`desktop` 在 Windows 上先跑 `gate:desktop` 再打包 NSIS。
    门禁和打包在同一个 job 里且门禁排在前面，所以门禁不过就不会打包。
 2. `macos` 在 arm64 runner 上组装 DMG。它不重复跑门禁——同一份 Rust 代码在两个
    runner 上各跑一遍没有意义，而打包本身是一次 release 编译，编不过这个 job 就会失败。
 3. `release` 需要上面三个 job 全部成功才执行，用 `gh release create --verify-tag`
    把两个平台的安装包和 `.sha256` 挂到标签对应的 Release 附件上。
+
+为什么要有 `preflight` 这一道：安装包文件名取自 `tauri.conf.json` 的 `version`
+（DMG 由 `build-macos-dmg.sh` 读它，NSIS 由 Tauri 自己读它）。标签和它不一致时，
+打出来的是 `助教工作台_0.1.0_aarch64.dmg`，却挂到 `v0.2.0` 的 Release 上——用户
+下到的包和 Release 声称的版本不符，而且从文件名上完全看不出来。版本号在仓库里
+重复了 7 处（根和 `apps/*`、`packages/*` 的 `package.json`、`tauri.conf.json`、
+`Cargo.toml`），改一处漏一处是迟早的事，所以先查一致性再看标签。同样的检查也在
+`pnpm check` 里（`check:versions`），本地跑绿就不会到 CI 才红。
+
+重跑已成功的运行会失败，因为 `gh release create` 发现 Release 已存在。这是刻意
+的：不让重跑悄悄替换掉已经发布出去的安装包（构建不可复现，重编出来的字节不同，
+已经抄下校验和的用户会对不上）。要重发就先 `gh release delete <tag>` 再重跑。
 
 两个打包 job 都会在编译前清空自己的输出目录（`bundle/nsis`、`bundle/dmg`）。
 这一步不能省：`Swatinem/rust-cache` 缓存的是整个 `target/`，里面包含上一次构建

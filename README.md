@@ -68,6 +68,8 @@ git tag v0.1.0 && git push origin v0.1.0
 
 需要在没有标签的情况下验证打包链路（例如改了打包脚本），可以在 Actions 页面手动触发一次 workflow：只产 artifacts，不发 Release。
 
+标签要和仓库里的版本号对得上（`v0.2.0` ↔ `0.2.0`）。安装包文件名取自 `apps/desktop/src-tauri/tauri.conf.json` 的 `version`，对不上的话会打出一个版本号和 Release 名称不符的包，而文件名本身看不出问题——所以 workflow 会在最前面的 `preflight` 直接拦下来，不会白编二十分钟。`pnpm check` 里也有一道同样的检查。
+
 | 平台        | 产物                                                               | 本地构建命令                 |
 | ----------- | ------------------------------------------------------------------ | ---------------------------- |
 | Windows x64 | NSIS 安装程序 `.exe`，安装向导里有目录选择页，可选当前用户或全机器 | `pnpm build:desktop:nsis`    |
