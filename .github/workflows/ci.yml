@@ -1,10 +1,22 @@
 name: CI
 
+# 触发方式分两类，区别只在「要不要出安装包」：
+#
+#   PR / main 推送  -> 只跑门禁。ubuntu 上跑 gate:web，windows 上跑 gate:desktop。
+#   v* 标签推送      -> 门禁 + 打包 Windows/macOS 安装包 + 发 GitHub Release。
+#
+# 为什么安装包只跟着标签走：以前每次 push 都会编一遍 NSIS 和 DMG，Windows 和
+# macOS 两个 job 加起来要几十分钟，而绝大多数提交根本不需要安装包。改成标签触发
+# 后，日常提交只花门禁的时间，需要发布时推一个标签即可，产物同时进 Release 附件
+# 和 workflow artifacts（保留 14 天）。
+#
+# workflow_dispatch 只用于「验证打包链路」：手动触发会产安装包 artifact，
+# 但不发 Release。这样试打包不必先推一个真标签、把半成品挂到公开 Release 上。
 on:
   pull_request:
   push:
     branches: [main]
-  # 需要临时出一版安装包时，可以直接在 Actions 页面手动触发，不必先推一次提交。
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -34,11 +46,14 @@ jobs:
       # HTTP transport, an auth store or a bare fetch() again (ACC-001/ACC-003).
       - run: pnpm run gate:web
 
-  # Windows：门禁 + 打包 NSIS 安装包。
+  # Windows：门禁 + 打标签时打包 NSIS 安装包。
   #
-  # 打包和门禁放在同一个 job 里，是为了复用同一次编译：`gate:desktop` 已经编过
-  # debug 产物，`build:desktop:nsis` 再编 release，两个 profile 的目标文件都能被
-  # rust-cache 缓存下来。拆成两个 job 会白白多编译一遍整个依赖树。
+  # 打包和门禁放在同一个 job 里，有两个原因：
+  #   1. 复用同一次编译——`gate:desktop` 已经编过 debug 产物，`build:desktop:nsis`
+  #      再编 release，两个 profile 的目标文件都能被 rust-cache 缓存下来。拆成两个
+  #      job 会白白多编译一遍整个依赖树。
+  #   2. 门禁天然成为打包的前置条件——步骤按顺序执行，门禁不过就不会走到打包，
+  #      更不会走到 Release（先跑门禁）。
   #
   # NSIS 的 installMode 为 both，安装向导里有目录选择页，用户可以自定义安装位置。
   desktop:
@@ -60,9 +75,19 @@ jobs:
           workspaces: apps/desktop/src-tauri
       - run: pnpm install --frozen-lockfile
       - run: pnpm run gate:desktop
-      - run: pnpm run build:desktop:nsis
-      - run: node scripts/checksum-installers.mjs apps/desktop/src-tauri/target/release/bundle/nsis
-      - uses: actions/upload-artifact@v7
+      # rust-cache 缓存的是整个 target/，其中包含上一次构建留下的 bundle/nsis/*.exe。
+      # 不清掉的话，旧版本的安装包会被一起上传，最后挂到新 Release 上——用户下到的
+      # 可能是上一版的包。所以每次打包前先清空输出目录。
+      - name: 清理上一次的安装包
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: Remove-Item -Recurse -Force apps/desktop/src-tauri/target/release/bundle/nsis -ErrorAction SilentlyContinue
+      - if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        run: pnpm run build:desktop:nsis
+      - if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        run: node scripts/checksum-installers.mjs apps/desktop/src-tauri/target/release/bundle/nsis
+      - if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
         with:
           name: assistant-workbench-windows-x64-installer
           path: |
@@ -71,7 +96,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # macOS：只打包，不重复跑门禁（门禁在 desktop job 里跑过一次就够了）。
+  # macOS：只在需要出安装包时运行，不重复跑门禁。
+  #
+  # 门禁不在这里跑：`gate:desktop` 已经在 windows job 里跑过一次，同一份 Rust 代码
+  # 在两个 runner 上各跑一遍纯属浪费。真要出问题，下面的打包步骤本身就是一次
+  # release 编译，编不过就会让这个 job 失败，Release 也就不会发出去。
   #
   # 这里不直接调用 `tauri build --bundles dmg`。Tauri 自带的 DMG 只放 .app 和
   # /Applications 快捷方式，而 bundle.macOS.files 的路径是相对 <app>.app/Contents
@@ -82,6 +111,7 @@ jobs:
   # macos-latest 是 arm64 运行器。GitHub 已在 2025-09-19 下线 x86_64 的 macOS
   # runner（Apple 停止支持该架构），所以这里只出 arm64 安装包。
   macos:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -97,6 +127,10 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri
       - run: pnpm install --frozen-lockfile
+      # 同 Windows：rust-cache 会把上一次的 bundle/dmg/*.dmg 一起还原回来，
+      # 先清空才能保证「这次传上去的就是这次编出来的」。
+      - name: 清理上一次的安装包
+        run: rm -rf apps/desktop/src-tauri/target/release/bundle/dmg
       - run: pnpm run build:desktop:mac-dmg
       - run: node scripts/checksum-installers.mjs apps/desktop/src-tauri/target/release/bundle/dmg
       - uses: actions/upload-artifact@v7
@@ -107,3 +141,49 @@ jobs:
             apps/desktop/src-tauri/target/release/bundle/dmg/*.sha256
           if-no-files-found: error
           retention-days: 14
+
+  # 发 Release：把两个平台安装包挂到标签对应的 Release 附件里。
+  #
+  # needs 三个 job 全绿才跑。任一平台的门禁或打包失败，这里就不会执行，
+  # 不会出现「门禁红着但 Release 已经发出去了」的情况。
+  #
+  # 只在标签推送时发；workflow_dispatch 手动触发只产 artifact。
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [web, desktop, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      # 顶层是 contents: read，发 Release 需要单独提权到这个 job。
+      contents: write
+    steps:
+      # 两个 artifact 一起下到一个目录：文件名不冲突（.exe / .dmg / 两个 .sha256）。
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: assistant-workbench-*
+          path: release-assets
+          merge-multiple: true
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # 文件名里有中文，必须用数组展开而不是 `release-assets/*`：数组展开会保留
+          # 每个元素原本的边界，通配符展开在含空格/多字节的文件名上会走样。
+          # nullglob 让「一个文件都没有」变成空数组，从而能被下面这一句拦下来，
+          # 而不是把一个字面量 `release-assets/*` 传给 gh。
+          shopt -s nullglob
+          assets=(release-assets/*)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "错误：没有下载到任何安装包。" >&2
+            exit 1
+          fi
+          ls -lh release-assets
+          # --verify-tag：标签必须已经存在，禁止 gh 自行从默认分支补建一个标签，
+          #   否则发出去的 Release 可能指向一个和预期不同的提交。
+          # --generate-notes：正文由 GitHub 按上一个 Release 之后的提交自动生成。
+          gh release create "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --generate-notes \
+            --title "${GITHUB_REF_NAME}" \
+            "${assets[@]}"

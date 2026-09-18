@@ -68,7 +68,7 @@ Schema 由 `apps/desktop/src-tauri/migrations/` 中的 SQL 文件建立和更新
 pnpm build:desktop:mac-dmg
 ```
 
-产物为 `apps/desktop/src-tauri/target/release/bundle/dmg/助教工作台.dmg`。
+产物为 `apps/desktop/src-tauri/target/release/bundle/dmg/助教工作台_0.1.0_aarch64.dmg`（产品名_版本_架构，与 Tauri 自带的 NSIS 命名 `助教工作台_0.1.0_x64-setup.exe` 对齐；带版本号是为了避免不同版本的安装包下载到同一目录时互相覆盖）。
 
 DMG 里除了 `助教工作台.app` 和 `/Applications` 快捷方式，还有两个分发用的文件：
 
@@ -88,6 +88,35 @@ DMG 里除了 `助教工作台.app` 和 `/Applications` 快捷方式，还有两
 `targets` 在 macOS 上写的是 `["app"]` 而不是 `["dmg"]`，目的是强制走上面这条路径，避免误产出一个缺少说明文件的 DMG。
 
 只出 arm64：GitHub 已于 2025-09-19 下线 x86_64 的 macOS runner（Apple 停止支持该架构），`macos-latest` 是 arm64。
+
+## 发布安装包
+
+安装包不再跟着每次提交产出，改成跟着标签走：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+推标签后 `.github/workflows/ci.yml` 会做三件事，顺序是硬性的：
+
+1. `web` 跑 `gate:web`；`desktop` 在 Windows 上先跑 `gate:desktop` 再打包 NSIS。
+   门禁和打包在同一个 job 里且门禁排在前面，所以门禁不过就不会打包。
+2. `macos` 在 arm64 runner 上组装 DMG。它不重复跑门禁——同一份 Rust 代码在两个
+   runner 上各跑一遍没有意义，而打包本身是一次 release 编译，编不过这个 job 就会失败。
+3. `release` 需要上面三个 job 全部成功才执行，用 `gh release create --verify-tag`
+   把两个平台的安装包和 `.sha256` 挂到标签对应的 Release 附件上。
+
+两个打包 job 都会在编译前清空自己的输出目录（`bundle/nsis`、`bundle/dmg`）。
+这一步不能省：`Swatinem/rust-cache` 缓存的是整个 `target/`，里面包含上一次构建
+留下的安装包；不清掉的话，旧版本的包会被一起上传，最后挂到新 Release 上，用户
+下到的就是上一版。
+
+`--verify-tag` 是必须的：没有它，`gh` 会在标签不存在时自动从默认分支补建一个，
+Release 就可能指向一个和预期不同的提交。
+
+PR 和 `main` 的普通推送只跑门禁，不打包。需要在没有标签的情况下验证打包链路时，
+在 Actions 页面手动触发 workflow（`workflow_dispatch`）：只产 artifacts，不发 Release。
 
 ## 已退役的组件
 

@@ -12,7 +12,11 @@
 # 用法：
 #   bash apps/desktop/scripts/build-macos-dmg.sh
 #
-# 仅限 macOS。产物：apps/desktop/src-tauri/target/release/bundle/dmg/<产品名>.dmg
+# 仅限 macOS。产物：
+#   apps/desktop/src-tauri/target/release/bundle/dmg/<产品名>_<版本>_<架构>.dmg
+# 文件名带版本号，是为了和 Tauri 自带的命名保持一致（NSIS 出的是
+# 助教工作台_0.1.0_x64-setup.exe）。DMG 是我们自己组装的，如果只叫
+# 助教工作台.dmg，用户把两个版本的安装包下载到同一个目录就会互相覆盖。
 
 set -euo pipefail
 
@@ -33,10 +37,26 @@ if [ -z "${PRODUCT_NAME}" ]; then
   exit 1
 fi
 
+VERSION="$(node -e "process.stdout.write(require(process.argv[1]).version)" "${CONF_PATH}")"
+if [ -z "${VERSION}" ]; then
+  echo "错误：没能从 ${CONF_PATH} 读到 version。" >&2
+  exit 1
+fi
+
+# 和 Tauri 的 bundle 命名对齐：arm64 在 bundle 名里写作 aarch64。
+case "$(uname -m)" in
+  arm64) BUNDLE_ARCH="aarch64" ;;
+  x86_64) BUNDLE_ARCH="x86_64" ;;
+  *)
+    echo "错误：未知的 CPU 架构 $(uname -m)。" >&2
+    exit 1
+    ;;
+esac
+
 APP_NAME="${PRODUCT_NAME}.app"
 APP_PATH="${TAURI_DIR}/target/release/bundle/macos/${APP_NAME}"
 DMG_DIR="${TAURI_DIR}/target/release/bundle/dmg"
-DMG_PATH="${DMG_DIR}/${PRODUCT_NAME}.dmg"
+DMG_PATH="${DMG_DIR}/${PRODUCT_NAME}_${VERSION}_${BUNDLE_ARCH}.dmg"
 
 INSTRUCTIONS="${EXTRA_DIR}/首次打开说明.txt"
 HELPER="${EXTRA_DIR}/修复并打开.command"
