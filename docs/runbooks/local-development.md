@@ -100,8 +100,10 @@ git push origin v0.1.0
 
 推标签后 `.github/workflows/ci.yml` 会做这些事，顺序是硬性的：
 
-0. `preflight` 先跑 `node scripts/check-versions.mjs`：确认仓库里 7 处版本号彼此一致，
-   并确认标签（`v0.2.0` → `0.2.0`）等于 `tauri.conf.json` 里的 `version`。
+0. `preflight` 先跑 `node scripts/check-versions.mjs`：以 `tauri.conf.json` 为基准，
+   确认必须跟随的 5 处（根与 `apps/*` 的 `package.json`、`tauri.conf.json`、
+   `Cargo.toml`）彼此一致，并确认标签（`v0.2.0` → `0.2.0`）等于那个基准版本。
+   `packages/*` 是内部库、允许独立演进，脚本只报告不拦截。
    `desktop` 和 `macos` 都 `needs` 它，所以这一步不过，两个平台根本不会开始编译。
 1. `web` 跑 `gate:web`；`desktop` 在 Windows 上先跑 `gate:desktop` 再打包 NSIS。
    门禁和打包在同一个 job 里且门禁排在前面，所以门禁不过就不会打包。
