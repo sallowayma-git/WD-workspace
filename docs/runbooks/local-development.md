@@ -135,6 +135,33 @@ Release 就可能指向一个和预期不同的提交。
 PR 和 `main` 的普通推送只跑门禁，不打包。需要在没有标签的情况下验证打包链路时，
 在 Actions 页面手动触发 workflow（`workflow_dispatch`）：只产 artifacts，不发 Release。
 
+## Windows 安装包
+
+```bash
+pnpm build:desktop:nsis
+```
+
+`bundle.windows.nsis.installMode` 是 `both`，安装向导里因此有两处由用户决定的地方：
+
+```
+欢迎 -> 许可 -> 安装模式（当前用户 / 全机器）-> 安装位置 -> 开始菜单 -> 安装 -> 完成
+```
+
+这两页都来自 Tauri 内嵌的 NSIS 模板（`@tauri-apps/cli` 的原生模块里能直接读到）：
+
+- `MUI_PAGE_DIRECTORY` 是无条件插入的（只带 `SkipIfPassive`，静默安装时才跳过），
+  所以目录选择页始终存在；
+- `MULTIUSER_PAGE_INSTALLMODE` 只在 `!if "${INSTALLMODE}" == "both"` 分支里插入。
+  换句话说，向导里有安装模式选择页，就说明 `both` 确实生效了。
+
+注意 `both` 的代价：即使最终选择"仅为当前用户"，安装包也会以管理员身份启动
+（清单里是 `requestedExecutionLevel level="highestAvailable"`），因为同一个安装包
+要能支持全机器安装。如果不想每次安装都弹 UAC，把 `installMode` 改成 `currentUser`，
+代价是装不到 `Program Files`。
+
+CI 只能证明安装包编得出来、校验和对得上；向导页有没有、点了之后装到哪，需要在
+真实 Windows 上点一遍。上面这套静态检查只能说明模板和配置是对的。
+
 ## 已退役的组件
 
 Spring/PostgreSQL/登录栈已在 F8 阶段移除。历史契约存档见 `docs/reference/retired-server/`，决策记录见 `docs/adr/ADR-002-local-desktop-runtime.md`。
