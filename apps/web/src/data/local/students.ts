@@ -123,6 +123,7 @@ export async function updateStudent(
     record(input, "subjectPreferences"),
     timestamp,
   );
+  const expectedVersion = requiredNumber(input, "expectedVersion");
   const nextStatus = requiredString(input, "status");
   if (text(existing, "status") === "ARCHIVED" || nextStatus === "ARCHIVED") {
     throw new ApiError(
@@ -152,7 +153,7 @@ export async function updateStudent(
           JSON.stringify(preferences),
           timestamp,
           studentId,
-          numberValue(existing, "version"),
+          expectedVersion,
         ],
         expectedRowsAffected: 1,
       },
@@ -275,18 +276,48 @@ export async function archiveStudent(
   }
   const expectedVersion = requiredNumber(input, "expectedVersion");
   const timestamp = now();
-  const trackRows = await core.storage.select<DbRow>(
-    `SELECT id FROM student_task_track
-     WHERE student_id = $1 AND status IN ('NOT_STARTED', 'ACTIVE')
-     ORDER BY id`,
-    [studentId],
-  );
-  const definitionRows = await privateSequenceDefinitions(core, studentId);
-  const snapshot: StudentArchiveSnapshot = {
-    pausedTrackIds: trackRows.map((row) => text(row, "id")),
-    archivedDefinitionIds: definitionRows.map((row) => text(row, "id")),
-  };
+  // Capture the archive snapshot in the same transaction as the lifecycle
+  // transition.  A read followed by a later UPDATE could otherwise omit a
+  // track/definition mounted between the two operations.
   const statements: LocalSqlStatement[] = [
+    {
+      sql: `UPDATE student SET status = 'ARCHIVED', archived_at = $1,
+              archive_snapshot_json = (
+                SELECT json_object(
+                  'pausedTrackIds', COALESCE(
+                    (SELECT json_group_array(track_id) FROM (
+                      SELECT stt.id AS track_id
+                      FROM student_task_track stt
+                      WHERE stt.student_id = $2
+                        AND stt.status IN ('NOT_STARTED', 'ACTIVE')
+                      ORDER BY stt.id
+                    )), json('[]')
+                  ),
+                  'archivedDefinitionIds', COALESCE(
+                    (SELECT json_group_array(definition_id) FROM (
+                      SELECT DISTINCT t.id AS definition_id
+                      FROM student_task_track stt
+                      JOIN task_template t ON t.id = stt.template_id
+                      WHERE stt.student_id = $2
+                        AND stt.generation_mode = 'SEQUENCE'
+                        AND stt.status IN ('NOT_STARTED', 'ACTIVE', 'PAUSED')
+                        AND t.status = 'ACTIVE'
+                        AND NOT EXISTS (
+                          SELECT 1 FROM student_task_track other
+                          WHERE other.template_id = t.id
+                            AND other.student_id <> $2
+                            AND other.status IN ('NOT_STARTED', 'ACTIVE', 'PAUSED')
+                        )
+                      ORDER BY t.id
+                    )), json('[]')
+                  )
+                )
+              ),
+              version = version + 1, updated_at = $1
+            WHERE id = $2 AND version = $3 AND status <> 'ARCHIVED'`,
+      values: [timestamp, studentId, expectedVersion],
+      expectedRowsAffected: 1,
+    },
     {
       sql: `UPDATE task_instance
             SET status = 'CANCELLED', cancelled_at = $1,
@@ -294,26 +325,32 @@ export async function archiveStudent(
             WHERE student_id = $2 AND status IN ('PENDING', 'BLOCKED')`,
       values: [timestamp, studentId],
     },
-    ...snapshot.pausedTrackIds.map((trackId) => ({
+    {
       sql: `UPDATE student_task_track SET status = 'PAUSED',
               version = version + 1, updated_at = $1
-            WHERE id = $2 AND status IN ('NOT_STARTED', 'ACTIVE')`,
-      values: [timestamp, trackId],
-      expectedRowsAffected: 1,
-    })),
-    ...snapshot.archivedDefinitionIds.map((definitionId) => ({
+            WHERE student_id = $2 AND status IN ('NOT_STARTED', 'ACTIVE')`,
+      values: [timestamp, studentId],
+    },
+    {
       sql: `UPDATE task_template SET status = 'ARCHIVED',
               version = version + 1, updated_at = $1
-            WHERE id = $2 AND generation_mode = 'SEQUENCE' AND status = 'ACTIVE'`,
-      values: [timestamp, definitionId],
-      expectedRowsAffected: 1,
-    })),
-    {
-      sql: `UPDATE student SET status = 'ARCHIVED', archived_at = $1,
-              archive_snapshot_json = $2, version = version + 1, updated_at = $1
-            WHERE id = $3 AND version = $4 AND status <> 'ARCHIVED'`,
-      values: [timestamp, JSON.stringify(snapshot), studentId, expectedVersion],
-      expectedRowsAffected: 1,
+            WHERE id IN (
+              SELECT DISTINCT t.id
+              FROM student_task_track stt
+              JOIN task_template t ON t.id = stt.template_id
+              WHERE stt.student_id = $2
+                AND stt.generation_mode = 'SEQUENCE'
+                AND stt.status IN ('PAUSED', 'ACTIVE', 'NOT_STARTED')
+                AND t.status = 'ACTIVE'
+                AND NOT EXISTS (
+                  SELECT 1 FROM student_task_track other
+                  WHERE other.template_id = t.id
+                    AND other.student_id <> $2
+                    AND other.status IN ('NOT_STARTED', 'ACTIVE', 'PAUSED')
+                )
+            )
+            AND generation_mode = 'SEQUENCE' AND status = 'ACTIVE'`,
+      values: [timestamp, studentId],
     },
   ];
   try {
@@ -321,8 +358,12 @@ export async function archiveStudent(
   } catch (error) {
     localError(error);
   }
+  const archivedStudent = await core.studentRow(studentId);
+  const snapshot = parseArchiveSnapshot(
+    nullableText(archivedStudent, "archive_snapshot_json"),
+  );
   return {
-    student: studentView(await core.studentRow(studentId)),
+    student: studentView(archivedStudent),
     cancelledTasks: numberValue(
       (
         await core.storage.select<DbRow>(
@@ -360,6 +401,7 @@ export async function restoreStudent(
   );
   const statements: LocalSqlStatement[] = [];
   const warnings: string[] = [];
+  const definitionsToCheck: Array<{ id: string; name: string }> = [];
 
   for (const definitionId of snapshot.archivedDefinitionIds) {
     const [definition] = await core.storage.select<DbRow>(
@@ -383,12 +425,24 @@ export async function restoreStudent(
       );
       continue;
     }
+    definitionsToCheck.push({
+      id: definitionId,
+      name: text(definition, "name"),
+    });
     statements.push({
       sql: `UPDATE task_template SET status = 'ACTIVE',
               version = version + 1, updated_at = $1
-            WHERE id = $2 AND status = 'ARCHIVED'`,
+            WHERE id = $2 AND status = 'ARCHIVED'
+              AND (
+                normalized_key IS NULL OR NOT EXISTS (
+                  SELECT 1 FROM task_template conflict
+                  WHERE conflict.generation_mode = 'SEQUENCE'
+                    AND conflict.status = 'ACTIVE'
+                    AND conflict.normalized_key = task_template.normalized_key
+                    AND conflict.id <> task_template.id
+                )
+              )`,
       values: [timestamp, definitionId],
-      expectedRowsAffected: 1,
     });
   }
 
@@ -448,6 +502,34 @@ export async function restoreStudent(
     await core.storage.transaction(statements);
   } catch (error) {
     localError(error);
+  }
+  // The preflight conflict check above gives useful warnings immediately. The
+  // guarded UPDATE is the source of truth if an active definition appeared
+  // between that read and the transaction; report that race as a warning too.
+  if (definitionsToCheck.length > 0) {
+    const ids = definitionsToCheck.map((definition) => definition.id);
+    const rows = await core.storage.select<DbRow>(
+      `SELECT id, name, normalized_key, status
+       FROM task_template WHERE id IN (${ids.map((_, i) => `$${i + 1}`).join(", ")})`,
+      ids,
+    );
+    for (const definition of definitionsToCheck) {
+      const row = rows.find(
+        (candidate) => text(candidate, "id") === definition.id,
+      );
+      if (!row || text(row, "status") !== "ARCHIVED") continue;
+      const normalizedKey = nullableText(row, "normalized_key");
+      if (!normalizedKey) continue;
+      const conflict = await core.storage.select<DbRow>(
+        `SELECT id FROM task_template
+         WHERE generation_mode = 'SEQUENCE' AND status = 'ACTIVE'
+           AND normalized_key = $1 AND id <> $2 LIMIT 1`,
+        [normalizedKey, definition.id],
+      );
+      if (conflict.length > 0) {
+        warnings.push(`长期任务“${definition.name}”存在同名活动定义，未恢复`);
+      }
+    }
   }
   return {
     student: studentView(await core.studentRow(studentId)),

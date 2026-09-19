@@ -13,8 +13,14 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DataAdapter } from "../../data/DataAdapter";
 import { setDataAdapterForTests } from "../../data/runtime";
-import { StudentWorkbenchPage } from "./StudentWorkbenchPage";
+import {
+  StudentWorkbenchPage,
+  WorkbenchStudentCard,
+} from "./StudentWorkbenchPage";
 import { resolveWorkbenchDrop } from "./workbenchDrag";
+import { createAdHocTask } from "../today/taskApi";
+
+vi.mock("../today/taskApi", () => ({ createAdHocTask: vi.fn() }));
 
 const LIN = "10000000-0000-4000-8000-000000000001";
 const WANG = "10000000-0000-4000-8000-000000000002";
@@ -68,6 +74,8 @@ function workbenchPayload() {
         id: LIN,
         name: "林同学",
         code: "S001",
+        classType: "",
+        version: 0,
         devicePolicy: "CONFIRM",
         tags: [],
         vocabularyCountThisWeek: 4,
@@ -77,6 +85,8 @@ function workbenchPayload() {
         id: WANG,
         name: "王同学",
         code: "S002",
+        classType: "",
+        version: 0,
         devicePolicy: "ALLOWED",
         tags: [],
         vocabularyCountThisWeek: 0,
@@ -90,7 +100,7 @@ function renderPage(initialEntry = "/workbench") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initialEntry]}>
         <AntApp>
@@ -99,11 +109,13 @@ function renderPage(initialEntry = "/workbench") {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...result, queryClient };
 }
 
 describe("StudentWorkbenchPage matrix acceptance", () => {
   afterEach(() => {
     setDataAdapterForTests(null);
+    vi.mocked(createAdHocTask).mockReset();
     vi.restoreAllMocks();
   });
 
@@ -210,6 +222,161 @@ describe("StudentWorkbenchPage matrix acceptance", () => {
     fireEvent.contextMenu(cell as HTMLElement);
     expect(await screen.findByText("复制当天作业")).toBeInTheDocument();
     expect(screen.getByText("标记为休息日")).toBeInTheDocument();
+  });
+
+  it("does not offer an add entry on a rest day", async () => {
+    const payload = workbenchPayload();
+    const date = weekDates()[0];
+    payload.students[0].days[date] = {
+      date,
+      available: false,
+      availableMinutes: 0,
+      tasks: [],
+    };
+    setDataAdapterForTests({
+      getWorkbench: () => Promise.resolve(payload),
+    } as unknown as DataAdapter);
+
+    renderPage();
+
+    const matrix = await screen.findByTestId("student-task-matrix");
+    await within(matrix).findByText("林同学");
+    expect(
+      within(matrix).queryByLabelText(`为 林同学 在 ${date} 添加任务`),
+    ).not.toBeInTheDocument();
+    expect(await within(matrix).findByText("休息")).toBeInTheDocument();
+  });
+
+  it("keeps an active composer when another cell's composer finishes later", async () => {
+    let resolveCreate: (() => void) | undefined;
+    vi.mocked(createAdHocTask).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = () =>
+            resolve({} as Awaited<ReturnType<typeof createAdHocTask>>);
+        }),
+    );
+    const payload = workbenchPayload();
+    // Keep both cells empty so each has an add entry.
+    const dates = weekDates();
+    payload.students[0].days = {};
+    payload.students[1].days = {};
+    for (const row of payload.students) {
+      for (const date of dates) {
+        row.days[date] = {
+          date,
+          available: true,
+          availableMinutes: 90,
+          tasks: [],
+        };
+      }
+    }
+    setDataAdapterForTests({
+      getWorkbench: () => Promise.resolve(payload),
+    } as unknown as DataAdapter);
+
+    const user = userEvent.setup();
+    renderPage();
+    const matrix = await screen.findByTestId("student-task-matrix");
+    await within(matrix).findByText("林同学");
+    const date = dates[0];
+    await user.click(
+      within(matrix).getByLabelText(`为 林同学 在 ${date} 添加任务`),
+    );
+    const firstInput = await within(matrix).findByRole("combobox", {
+      name: "为 林同学 新增任务",
+    });
+    await user.type(firstInput, "先创建");
+    fireEvent.blur(firstInput);
+    await user.click(
+      within(matrix).getByLabelText(`为 王同学 在 ${date} 添加任务`),
+    );
+    await waitFor(() =>
+      expect(vi.mocked(createAdHocTask)).toHaveBeenCalledTimes(1),
+    );
+
+    resolveCreate?.();
+    await waitFor(() =>
+      expect(
+        within(matrix).getByRole("combobox", {
+          name: "为 王同学 新增任务",
+        }),
+      ).toBeVisible(),
+    );
+  });
+
+  it("saves an open student-card draft against the edit-session version", async () => {
+    const initial = {
+      ...workbenchPayload().students[0],
+      classType: "旧班",
+      version: 3,
+    };
+    const refreshed = { ...initial, classType: "服务端新班", version: 4 };
+    const updateStudentCard = vi.fn(() =>
+      Promise.resolve({
+        id: LIN,
+        studentCode: "S001",
+        name: "林同学",
+        alias: null,
+        status: "ACTIVE",
+        classType: "我的草稿",
+        enrollmentDate: null,
+        defaultDevicePolicy: "CONFIRM",
+        note: null,
+        tags: [],
+        subjectPreferences: [],
+        version: 4,
+        updatedAt: "2026-09-19T00:00:00Z",
+      }),
+    );
+    setDataAdapterForTests({ updateStudentCard } as unknown as DataAdapter);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <AntApp>
+            <WorkbenchStudentCard
+              row={initial as never}
+              weekStart="2026-09-14"
+            />
+          </AntApp>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "编辑 林同学" }));
+    const classInput = await screen.findByRole("textbox", {
+      name: "班级/班型",
+    });
+    await user.clear(classInput);
+    await user.type(classInput, "我的草稿");
+
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <AntApp>
+            <WorkbenchStudentCard
+              row={refreshed as never}
+              weekStart="2026-09-14"
+            />
+          </AntApp>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(classInput).toHaveValue("我的草稿");
+
+    await user.click(screen.getByRole("button", { name: /保\s*存/ }));
+    await waitFor(() =>
+      expect(updateStudentCard).toHaveBeenCalledWith(
+        LIN,
+        expect.objectContaining({
+          classType: "我的草稿",
+          expectedVersion: 3,
+        }),
+      ),
+    );
   });
 
   it("keeps a task checkbox clickable inside the draggable matrix card", async () => {

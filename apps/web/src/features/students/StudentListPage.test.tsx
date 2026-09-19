@@ -1,11 +1,20 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DataAdapter } from "../../data/DataAdapter";
 import { setDataAdapterForTests } from "../../data/runtime";
 import { StudentListPage } from "./StudentListPage";
+
+function HistoryControls() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => void navigate(-1)}>
+      后退
+    </button>
+  );
+}
 
 describe("StudentListPage", () => {
   afterEach(() => {
@@ -149,5 +158,80 @@ describe("StudentListPage", () => {
       expect(screen.queryByText("林同学")).not.toBeInTheDocument(),
     );
     expect(screen.getByText("王同学")).toBeVisible();
+  });
+
+  it("restores URL filters when navigating back", async () => {
+    const listStudents = vi.fn<(query?: string) => Promise<unknown>>((query) =>
+      Promise.resolve({
+        items: [
+          {
+            id: "10000000-0000-4000-8000-000000000001",
+            studentCode: "S001",
+            name: "林同学",
+            alias: null,
+            status: "ACTIVE",
+            classType: "强化班",
+            enrollmentDate: null,
+            defaultDevicePolicy: "CONFIRM",
+            note: null,
+            tags: [],
+            subjectPreferences: [],
+            version: 0,
+            updatedAt: "2026-08-16T00:00:00Z",
+          },
+          {
+            id: "10000000-0000-4000-8000-000000000002",
+            studentCode: "S002",
+            name: "王同学",
+            alias: null,
+            status: "ARCHIVED",
+            classType: "强化班",
+            enrollmentDate: null,
+            defaultDevicePolicy: "CONFIRM",
+            note: null,
+            tags: [],
+            subjectPreferences: [],
+            version: 0,
+            updatedAt: "2026-08-16T00:00:00Z",
+          },
+        ].filter(
+          (item) =>
+            !query ||
+            item.name.includes(query) ||
+            item.studentCode.includes(query),
+        ),
+        page: 0,
+        size: 50,
+        total: 1,
+        hasNext: false,
+      }),
+    );
+    setDataAdapterForTests({ listStudents } as unknown as DataAdapter);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter
+          initialEntries={[
+            "/students?search=%E7%8E%8B&status=ARCHIVED",
+            "/students?search=%E6%9E%97&status=CURRENT",
+          ]}
+          initialIndex={1}
+        >
+          <HistoryControls />
+          <StudentListPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("林同学")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "后退" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("搜索学生")).toHaveValue("王"),
+    );
+    expect(await screen.findByText("王同学")).toBeVisible();
+    expect(listStudents).toHaveBeenLastCalledWith("王");
   });
 });

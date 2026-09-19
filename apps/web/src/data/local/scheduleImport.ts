@@ -67,7 +67,7 @@ export async function previewScheduleImport(
     throw new ApiError(422, "排期导入数据格式无效", "INVALID_IMPORT_ROWS");
   }
   const students = await core.storage.select<DbRow>(
-    "SELECT id, student_code, name FROM student",
+    "SELECT id, student_code, name FROM student WHERE status = 'ACTIVE'",
   );
   const byCode = new Map(
     students.map((row) => [text(row, "student_code"), row]),
@@ -172,10 +172,21 @@ function createStatement(
       id, student_id, source_type, scheduled_date, original_scheduled_date,
       status, title_snapshot, schedule_origin, manual_override, locked,
       star, version, created_at, updated_at
-    ) VALUES ($1, $2, 'IMPORT', $3, $3, 'PENDING', $4,
-              'EXCEL_IMPORT', 0, 0, 0, 0, $5, $5)`,
+    ) SELECT $1, s.id, 'IMPORT', $3, $3, 'PENDING', $4,
+              'EXCEL_IMPORT', 0, 0, 0, 0, $5, $5
+        FROM student s
+        WHERE s.id = $2 AND s.status = 'ACTIVE'
+          AND NOT EXISTS (
+            SELECT 1 FROM task_instance existing
+            WHERE existing.student_id = s.id
+              AND existing.scheduled_date = $3
+              AND existing.status <> 'CANCELLED'
+              AND (
+                existing.title_snapshot = $4 OR
+                existing.short_title_snapshot = $4
+              )
+          )`,
     values: [id, row.studentId, row.date, row.titles[0], timestamp],
-    expectedRowsAffected: 1,
   };
 }
 
@@ -203,17 +214,33 @@ export async function executeScheduleImport(
     if (!row || !studentId || row.titles.length !== 1) {
       throw new ApiError(422, "排期导入计划包含无效行", "INVALID_IMPORT_PLAN");
     }
-    await core.studentRow(studentId);
+    await core.activeStudentRow(studentId);
     parseDate(row.date);
     rows.push({ ...row, studentId });
   }
   if (rows.length === 0) return { created: 0 };
   try {
     const timestamp = now();
-    await core.storage.transaction(
-      rows.map((row) => createStatement(row, timestamp)),
-    );
-    return { created: rows.length };
+    // Keep the active-student check inside the same transaction as the
+    // conditional INSERTs.  Duplicate rows are intentionally allowed to
+    // affect zero rows so replaying a preview plan is a no-op; a student
+    // archived after validation still fails its guard statement.
+    const studentIds = [...new Set(rows.map((row) => row.studentId))];
+    const guards: LocalSqlStatement[] = studentIds.map((studentId) => ({
+      sql: `UPDATE student SET updated_at = updated_at
+            WHERE id = $1 AND status = 'ACTIVE'`,
+      values: [studentId],
+      expectedRowsAffected: 1,
+    }));
+    const changes = await core.storage.transaction([
+      ...guards,
+      ...rows.map((row) => createStatement(row, timestamp)),
+    ]);
+    return {
+      created: changes
+        .slice(guards.length)
+        .reduce((total, value) => total + value, 0),
+    };
   } catch (error) {
     localError(error);
   }

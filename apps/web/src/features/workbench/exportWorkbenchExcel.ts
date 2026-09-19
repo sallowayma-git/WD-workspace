@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 import type { WorkbenchResponse } from "./workbenchApi";
 import { formatDayTaskList } from "./copyDayTasks";
 import { getPlatformAdapter } from "../../lib/platform/runtimePlatformAdapter";
+import { datesBetween, parseDate } from "../../data/local/dates";
 
 export const WORKBENCH_FIXED_HEADERS = [
   "序号",
@@ -18,20 +19,9 @@ function isoDate(date: string): string {
 }
 
 function dateHeader(date: string): string {
-  const parsed = new Date(`${date}T00:00:00Z`);
+  const parsed = parseDate(date);
   const names = ["日", "一", "二", "三", "四", "五", "六"];
-  return `${isoDate(date)} 周${names[parsed.getUTCDay()]}`;
-}
-
-function datesBetween(from: string, to: string): string[] {
-  const result: string[] = [];
-  const date = new Date(`${from}T00:00:00Z`);
-  const end = new Date(`${to}T00:00:00Z`);
-  while (date <= end) {
-    result.push(date.toISOString().slice(0, 10));
-    date.setUTCDate(date.getUTCDate() + 1);
-  }
-  return result;
+  return `${isoDate(date)} 周${names[parsed.getDay()]}`;
 }
 
 export function workbenchRows(
@@ -59,7 +49,7 @@ export function workbenchRows(
 export async function exportWorkbenchExcel(
   response: WorkbenchResponse,
   suggestedName = `学生工作台-${response.range.from}-${response.range.to}.xlsx`,
-): Promise<void> {
+): Promise<boolean> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "助教工作台";
   const sheet = workbook.addWorksheet("学生工作台", {
@@ -90,7 +80,7 @@ export async function exportWorkbenchExcel(
     }
   }
   const buffer = await workbook.xlsx.writeBuffer();
-  await getPlatformAdapter().saveFile(
+  return getPlatformAdapter().saveFile(
     new Blob([buffer], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }),

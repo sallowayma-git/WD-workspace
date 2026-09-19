@@ -120,7 +120,7 @@ describe("workbench Excel format", () => {
     let saved: Blob | undefined;
     vi.spyOn(browserPlatformAdapter, "saveFile").mockImplementation((blob) => {
       saved = blob;
-      return Promise.resolve();
+      return Promise.resolve(true);
     });
     await exportWorkbenchExcel(sample());
     expect(saved).toBeInstanceOf(Blob);
@@ -134,5 +134,10 @@ describe("workbench Excel format", () => {
     });
     expect(sheet.getCell(2, 8).alignment?.wrapText).toBe(true);
     expect(sheet.getCell(2, 9).value).toBe("休息");
+  });
+
+  it("reports a cancelled save instead of a successful export", async () => {
+    vi.spyOn(browserPlatformAdapter, "saveFile").mockResolvedValue(false);
+    await expect(exportWorkbenchExcel(sample())).resolves.toBe(false);
   });
 });

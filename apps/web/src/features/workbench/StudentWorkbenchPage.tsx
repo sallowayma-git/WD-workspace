@@ -48,6 +48,12 @@ import dayjs, { type Dayjs } from "dayjs";
 import { Link, useSearchParams } from "react-router-dom";
 import { z } from "zod";
 import { ApiError } from "../../lib/api/ApiError";
+import {
+  datesBetween,
+  formatDate,
+  parseDate,
+  shiftDate,
+} from "../../data/local/dates";
 import { StudentTaskMatrixShell } from "../../vendor/flowclass/matrix/StudentTaskMatrixShell";
 import { TaskCard } from "../tasks/TaskCard";
 import {
@@ -109,7 +115,25 @@ const DENSITY_CONFIG: Record<
 
 const dayNames = ["日", "一", "二", "三", "四", "五", "六"];
 
-function WorkbenchStudentCard({
+type WorkbenchStudentCardDraft = {
+  statusLabelId: string | null;
+  classType: string;
+  examDate: string;
+  note: string;
+};
+
+function toWorkbenchStudentCardDraft(
+  row: WorkbenchStudentRow,
+): WorkbenchStudentCardDraft {
+  return {
+    statusLabelId: row.statusLabel?.id ?? null,
+    classType: row.classType ?? "",
+    examDate: row.examDate ?? "",
+    note: row.note ?? "",
+  };
+}
+
+export function WorkbenchStudentCard({
   row,
   weekStart,
 }: {
@@ -120,28 +144,104 @@ function WorkbenchStudentCard({
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [statusLabelsOpen, setStatusLabelsOpen] = useState(false);
-  const [draft, setDraft] = useState({
-    statusLabelId: row.statusLabel?.id ?? null,
-    classType: row.classType ?? "",
-    examDate: row.examDate ?? "",
-    note: row.note ?? "",
-  });
+  const [draft, setDraft] = useState<WorkbenchStudentCardDraft>(() =>
+    toWorkbenchStudentCardDraft(row),
+  );
+  // Keep the version that was current when the edit session started. A
+  // background workbench refetch may replace `row` while the popover is open;
+  // saving against the new row.version with the old local draft would let a
+  // stale editor overwrite someone else's update.
+  const editSessionRef = useRef<{
+    studentId: string;
+    version: number;
+    token: number;
+  } | null>(null);
+  const editSessionTokenRef = useRef(0);
+  const syncedStatusLabelId = row.statusLabel?.id ?? null;
+  const syncedClassType = row.classType ?? "";
+  const syncedExamDate = row.examDate ?? "";
+  const syncedNote = row.note ?? "";
+
+  useEffect(() => {
+    // Server snapshots are safe to mirror while the editor is closed. Once a
+    // user starts typing, keep their draft intact until they explicitly save
+    // or close the editor.
+    if (editing) return;
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      setDraft({
+        statusLabelId: syncedStatusLabelId,
+        classType: syncedClassType,
+        examDate: syncedExamDate,
+        note: syncedNote,
+      });
+      editSessionRef.current = null;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    editing,
+    row.id,
+    row.version,
+    row.statusLabel?.id,
+    row.statusLabel?.label,
+    row.statusLabel?.color,
+    row.classType,
+    row.examDate,
+    row.note,
+    syncedStatusLabelId,
+    syncedClassType,
+    syncedExamDate,
+    syncedNote,
+  ]);
+
+  const handleEditorOpenChange = (open: boolean) => {
+    if (open) {
+      // Start a fresh session from the latest row snapshot. This also avoids
+      // carrying a cancelled/stale draft into a later edit.
+      setDraft(toWorkbenchStudentCardDraft(row));
+      editSessionRef.current = {
+        studentId: row.id,
+        version: row.version ?? 0,
+        token: ++editSessionTokenRef.current,
+      };
+      setEditing(true);
+      return;
+    }
+    editSessionRef.current = null;
+    setEditing(false);
+  };
+
   const labelsQuery = useQuery({
     queryKey: ["student-status-labels"],
     queryFn: listStudentStatusLabels,
     staleTime: 30_000,
   });
   const updateMutation = useMutation({
-    mutationFn: () =>
-      updateStudentCard(row.id, {
-        statusLabelId: draft.statusLabelId,
-        classType: draft.classType.trim() || null,
-        examDate: draft.examDate || null,
-        note: draft.note.trim() || null,
-        expectedVersion: row.version ?? 0,
+    mutationFn: (input: {
+      studentId: string;
+      draft: WorkbenchStudentCardDraft;
+      expectedVersion: number;
+      sessionToken: number | null;
+    }) =>
+      updateStudentCard(input.studentId, {
+        statusLabelId: input.draft.statusLabelId,
+        classType: input.draft.classType.trim() || null,
+        examDate: input.draft.examDate || null,
+        note: input.draft.note.trim() || null,
+        expectedVersion: input.expectedVersion,
       }),
-    onSuccess: async () => {
-      setEditing(false);
+    onSuccess: async (_updated, input) => {
+      // Do not close a newer edit session if an older request resolves late.
+      if (
+        editSessionRef.current?.studentId === input.studentId &&
+        editSessionRef.current.version === input.expectedVersion &&
+        editSessionRef.current.token === input.sessionToken
+      ) {
+        handleEditorOpenChange(false);
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["workbench"] }),
         queryClient.invalidateQueries({ queryKey: ["students"] }),
@@ -275,7 +375,18 @@ function WorkbenchStudentCard({
       <Button
         type="primary"
         loading={updateMutation.isPending}
-        onClick={() => updateMutation.mutate()}
+        onClick={() => {
+          const session = editSessionRef.current;
+          updateMutation.mutate({
+            studentId: row.id,
+            draft,
+            expectedVersion:
+              session?.studentId === row.id
+                ? session.version
+                : (row.version ?? 0),
+            sessionToken: session?.studentId === row.id ? session.token : null,
+          });
+        }}
       >
         保存
       </Button>
@@ -304,7 +415,7 @@ function WorkbenchStudentCard({
             </Tag>
             <Popover
               open={editing}
-              onOpenChange={setEditing}
+              onOpenChange={handleEditorOpenChange}
               trigger="click"
               content={editor}
               title="编辑学生卡片"
@@ -580,9 +691,7 @@ export function StudentWorkbenchPage() {
     }),
   );
 
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekEnd.getDate() + 6);
-  const weekEndStr = weekEnd.toISOString().slice(0, 10);
+  const weekEndStr = shiftDate(weekStart, 6);
 
   const openExportRange = () => {
     setExportRange([weekStart, weekEndStr]);
@@ -593,9 +702,11 @@ export function StudentWorkbenchPage() {
     setExporting(true);
     try {
       const response = await getWorkbench(exportRange[0], exportRange[1]);
-      await exportWorkbenchExcel(response);
-      void message.success("已导出 Excel");
-      setExportRangeOpen(false);
+      const saved = await exportWorkbenchExcel(response);
+      if (saved) {
+        void message.success("已导出 Excel");
+        setExportRangeOpen(false);
+      }
     } catch (error) {
       void message.error(error instanceof Error ? error.message : "导出失败");
     } finally {
@@ -976,9 +1087,7 @@ export function StudentWorkbenchPage() {
   };
 
   const shiftWeek = (days: number) => {
-    const date = new Date(weekStart);
-    date.setDate(date.getDate() + days);
-    setWeekStart(date.toISOString().slice(0, 10));
+    setWeekStart(shiftDate(weekStart, days));
   };
 
   if (workbenchQuery.isPending) {
@@ -1028,12 +1137,7 @@ export function StudentWorkbenchPage() {
     archivedSearchQuery.data?.items.filter(
       (student) => student.status === "ARCHIVED",
     ).length ?? 0;
-  const dates: string[] = [];
-  const start = new Date(data.range.from);
-  const end = new Date(data.range.to);
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    dates.push(d.toISOString().slice(0, 10));
-  }
+  const dates = datesBetween(data.range.from, data.range.to);
 
   const columns: TableColumnsType<WorkbenchStudentRow> = [
     {
@@ -1073,9 +1177,19 @@ export function StudentWorkbenchPage() {
       }),
       render: (_v: unknown, row: WorkbenchStudentRow) => {
         const cell = row.days[date];
+        const available = cell?.available !== false;
         let content: ReactNode;
         const composerOpen =
-          activeComposer?.studentId === row.id && activeComposer.date === date;
+          available &&
+          activeComposer?.studentId === row.id &&
+          activeComposer.date === date;
+        const closeOwnComposer = () => {
+          setActiveComposer((current) =>
+            current?.studentId === row.id && current.date === date
+              ? null
+              : current,
+          );
+        };
         const cellMenuItems: MenuProps["items"] = [
           {
             key: "copy-day-tasks",
@@ -1112,14 +1226,21 @@ export function StudentWorkbenchPage() {
                 studentName={row.name}
                 scheduledDate={date}
                 commitOnBlur
-                onCancel={() => setActiveComposer(null)}
+                onCancel={closeOwnComposer}
                 onCreated={async () => {
-                  setActiveComposer(null);
+                  // Creation/blur can resolve after the user has already
+                  // opened another cell. Only the composer that emitted the
+                  // callback may close itself.
+                  closeOwnComposer();
                   await invalidateTaskViews(queryClient);
                 }}
               />
             </div>
           );
+        } else if (!available) {
+          // A rest day remains visible for history and context-menu actions,
+          // but must never offer an add-task entry.
+          content = <span aria-hidden="true" />;
         } else if (!cell || cell.tasks.length === 0) {
           content = (
             <Button
@@ -1198,13 +1319,15 @@ export function StudentWorkbenchPage() {
                   </WorkbenchDraggableTask>
                 );
               })}
-              <Button
-                type="text"
-                size="small"
-                icon={<PlusOutlined />}
-                aria-label={`为 ${row.name} 在 ${date} 添加任务`}
-                onClick={() => setActiveComposer({ studentId: row.id, date })}
-              />
+              {available ? (
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<PlusOutlined />}
+                  aria-label={`为 ${row.name} 在 ${date} 添加任务`}
+                  onClick={() => setActiveComposer({ studentId: row.id, date })}
+                />
+              ) : null}
             </Space>
           );
         }
@@ -1328,15 +1451,15 @@ export function StudentWorkbenchPage() {
 }
 
 function getWeekStart(dateStr: string): string {
-  const date = new Date(dateStr);
+  const date = parseDate(dateStr);
   const day = date.getDay();
   const diff = day === 0 ? -6 : 1 - day;
   date.setDate(date.getDate() + diff);
-  return date.toISOString().slice(0, 10);
+  return formatDate(date);
 }
 
 function formatDateHeader(dateStr: string): string {
-  const date = new Date(dateStr);
+  const date = parseDate(dateStr);
   return `${date.getMonth() + 1}/${date.getDate()} ${dayNames[date.getDay()]}`;
 }
 

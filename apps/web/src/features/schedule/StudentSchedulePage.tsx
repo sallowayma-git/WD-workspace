@@ -67,6 +67,7 @@ import {
 } from "./scheduleApi";
 import { MonthView } from "../../vendor/flowclass/calendar/MonthView";
 import { canMoveCalendarEvent } from "../../vendor/flowclass/calendar/types";
+import { parseDate, shiftDate } from "../../data/local/dates";
 
 const dayNames = ["日", "一", "二", "三", "四", "五", "六"];
 // Monday-first header order for the week/month calendar grids. The backend
@@ -79,7 +80,7 @@ const MAX_TASKS_PER_CELL = 10;
 
 /** Returns the 0-based column index (Mon=0 .. Sun=6) for a YYYY-MM-DD date. */
 function gridColumnIndex(date: string): number {
-  const d = new Date(date);
+  const d = parseDate(date);
   // JS getDay(): Sun=0..Sat=6. Convert to Monday-first (Sun -> 6).
   return (d.getDay() + 6) % 7;
 }
@@ -1091,16 +1092,7 @@ function buildWeekGrid(days: ScheduleDay[]): (ScheduleDay | null)[] {
 
 /** The calendar day after `date`, in local time, as YYYY-MM-DD. */
 function nextCalendarDay(date: string): string {
-  const next = new Date(date);
-  next.setDate(next.getDate() + 1);
-  return formatDateKey(next.getFullYear(), next.getMonth(), next.getDate());
-}
-
-/** Format a Y/M/D into a YYYY-MM-DD string (local, no timezone shift). */
-function formatDateKey(year: number, month: number, day: number): string {
-  const mm = String(month + 1).padStart(2, "0");
-  const dd = String(day).padStart(2, "0");
-  return `${year}-${mm}-${dd}`;
+  return shiftDate(date, 1);
 }
 
 function DayCard({
@@ -1140,7 +1132,7 @@ function DayCard({
   onRescheduleSuccess: () => void;
   onAddTask: () => void | Promise<void>;
 }) {
-  const dateObj = new Date(day.date);
+  const dateObj = parseDate(day.date);
   const dayName = dayNames[dateObj.getDay()];
   // "今天"高亮基于本机日历日期。
   const isToday = day.date === useBusinessDate();
@@ -1282,7 +1274,7 @@ function DayCell({
   onRescheduleSuccess: () => void;
   onAddTask: () => void | Promise<void>;
 }) {
-  const dateObj = new Date(day.date);
+  const dateObj = parseDate(day.date);
   const dayName = dayNames[dateObj.getDay()];
   // "今天"高亮基于本机日历日期。
   const isToday = day.date === useBusinessDate();

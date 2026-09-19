@@ -76,4 +76,37 @@ describe("TaskCard controls", () => {
     await user.keyboard("{Escape}");
     expect(onRename).toHaveBeenCalledTimes(1);
   });
+
+  it("does not treat a double click as a detail click", async () => {
+    const user = userEvent.setup();
+    const task = {
+      id: "task-double-click",
+      title: "双击改名",
+      sourceType: "AD_HOC",
+      status: "PENDING",
+      locked: false,
+      version: 0,
+    };
+    const onViewDetail = vi.fn();
+    render(
+      <TaskCard
+        task={task}
+        onComplete={vi.fn()}
+        onReopen={vi.fn()}
+        onViewDetail={onViewDetail}
+        onRename={vi.fn()}
+        onDelete={vi.fn()}
+        onDuplicate={vi.fn()}
+      />,
+    );
+
+    await user.dblClick(
+      screen.getByRole("button", { name: "查看任务 双击改名" }),
+    );
+    expect(
+      await screen.findByRole("textbox", { name: "编辑任务标题" }),
+    ).toBeVisible();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(onViewDetail).not.toHaveBeenCalled();
+  });
 });

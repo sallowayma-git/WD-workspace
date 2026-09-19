@@ -15,7 +15,8 @@ export type NotificationMessage = {
 
 export interface PlatformAdapter {
   chooseFile(options?: FileSelectionOptions): Promise<SelectedFile[] | null>;
-  saveFile(data: Blob, suggestedName: string): Promise<void>;
+  /** Returns true when the file was saved, false when the user cancelled. */
+  saveFile(data: Blob, suggestedName: string): Promise<boolean>;
   copyText(text: string): Promise<void>;
   requestText(options: {
     title: string;

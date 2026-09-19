@@ -346,6 +346,19 @@ export async function setStudentRestDay(
   let lockedSkipped = 0;
   let blocked = 0;
   const targetDates: string[] = [];
+  const counters: Array<{
+    index: number;
+    kind: "moved" | "locked" | "blocked";
+    targetDate?: string;
+  }> = [];
+  const pushCounted = (
+    statement: LocalSqlStatement,
+    kind: "moved" | "locked" | "blocked",
+    targetDate?: string,
+  ) => {
+    counters.push({ index: statements.length, kind, targetDate });
+    statements.push(statement);
+  };
 
   if (rest) {
     statements.push({
@@ -375,68 +388,82 @@ export async function setStudentRestDay(
         { date, available: false, availableMinutes: 0, devicePolicy: null },
       ],
     };
-    const affected = await core.storage.select<DbRow>(
-      `SELECT id, scheduled_date, requires_device_snapshot, locked, status, version
-       FROM task_instance
-       WHERE student_id = $1 AND scheduled_date = $2
-         AND status IN ('PENDING', 'BLOCKED')`,
-      [studentId, date],
+    // Count and move tasks in the same transaction as the override. A task
+    // committed before this transaction is included by these predicates;
+    // creation after the override is rejected at the task insertion boundary.
+    pushCounted(
+      {
+        sql: `UPDATE task_instance SET updated_at = updated_at
+              WHERE student_id = $1 AND scheduled_date = $2
+                AND status IN ('PENDING', 'BLOCKED') AND locked <> 0`,
+        values: [studentId, date],
+      },
+      "locked",
     );
-    for (const task of affected) {
-      if (bool(task, "locked")) {
-        lockedSkipped += 1;
-        continue;
-      }
+    const requirementGroups = [
+      { predicate: "requires_device_snapshot = 1", requiresDevice: true },
+      { predicate: "requires_device_snapshot = 0", requiresDevice: false },
+      {
+        predicate: "requires_device_snapshot IS NULL",
+        requiresDevice: undefined,
+      },
+    ];
+    for (const group of requirementGroups) {
       const targetDate = findNextAvailableStudyDate({
         calendar: effectiveCalendar,
         afterDate: date,
-        requiresDevice:
-          task.requires_device_snapshot == null
-            ? undefined
-            : bool(task, "requires_device_snapshot"),
+        requiresDevice: group.requiresDevice,
         horizonDays: STUDY_DATE_HORIZON_DAYS,
       });
       if (!targetDate) {
-        blocked += 1;
-        // Keep the task exactly where it was. `blocked` is an operation
-        // summary count, not a request to mutate a pending task's lifecycle.
+        pushCounted(
+          {
+            sql: `UPDATE task_instance SET updated_at = updated_at
+                  WHERE student_id = $1 AND scheduled_date = $2
+                    AND status IN ('PENDING', 'BLOCKED') AND locked = 0
+                    AND ${group.predicate}`,
+            values: [studentId, date],
+          },
+          "blocked",
+        );
         continue;
       }
-      moved += 1;
-      targetDates.push(targetDate);
-      statements.push({
-        sql: `UPDATE task_instance SET scheduled_date = $1,
-              original_scheduled_date = COALESCE(original_scheduled_date, $2),
-              schedule_origin = 'MANUAL', manual_override = 1,
-              override_reason = 'REST_DAY_MOVE', status = 'PENDING',
-              version = version + 1, updated_at = $3
-              WHERE id = $4 AND version = $5
-                AND status IN ('PENDING', 'BLOCKED') AND locked = 0`,
-        values: [
-          targetDate,
-          date,
-          timestamp,
-          text(task, "id"),
-          numberValue(task, "version"),
-        ],
-        expectedRowsAffected: 1,
-      });
+      pushCounted(
+        {
+          sql: `UPDATE task_instance SET scheduled_date = $1,
+                original_scheduled_date = COALESCE(original_scheduled_date, $2),
+                schedule_origin = 'MANUAL', manual_override = 1,
+                override_reason = 'REST_DAY_MOVE', status = 'PENDING',
+                version = version + 1, updated_at = $3
+                WHERE student_id = $4 AND scheduled_date = $2
+                  AND status IN ('PENDING', 'BLOCKED') AND locked = 0
+                  AND ${group.predicate}`,
+          values: [targetDate, date, timestamp, studentId],
+        },
+        "moved",
+        targetDate,
+      );
     }
   } else {
     // Only remove the manual rest override. A weekly day that is still off
     // receives an explicit available override so cancelling rest is visible
     // in the same calendar without changing the weekly pattern.
-    if (
-      existing &&
+    const removingManualRest =
+      existing != null &&
       bool(existing, "available") === false &&
-      nullableText(existing, "source_type") === "MANUAL"
-    ) {
+      nullableText(existing, "source_type") === "MANUAL";
+    if (removingManualRest) {
       statements.push({
         sql: `DELETE FROM student_date_override
               WHERE student_id = $1 AND business_date = $2
                 AND available = 0 AND source_type = 'MANUAL'`,
         values: [studentId, date],
       });
+    }
+    // If there was no override at all, cancelling rest still means the user
+    // explicitly enabled this date.  This matters when the weekly pattern is
+    // OFF: deleting nothing would leave the effective calendar unavailable.
+    if (!existing || removingManualRest) {
       const withoutOverride = {
         ...calendar,
         overrides: (calendar.overrides ?? []).filter(
@@ -456,7 +483,22 @@ export async function setStudentRestDay(
     }
   }
   try {
-    if (statements.length > 0) await core.storage.transaction(statements);
+    if (statements.length > 0) {
+      const changes = await core.storage.transaction(statements);
+      for (const counter of counters) {
+        const count = changes[counter.index] ?? 0;
+        if (counter.kind === "moved") {
+          moved += count;
+          if (count > 0 && counter.targetDate) {
+            targetDates.push(counter.targetDate);
+          }
+        } else if (counter.kind === "locked") {
+          lockedSkipped += count;
+        } else {
+          blocked += count;
+        }
+      }
+    }
   } catch (error) {
     localError(error);
   }

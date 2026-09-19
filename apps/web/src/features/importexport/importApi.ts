@@ -121,7 +121,9 @@ export async function parseScheduleWorkbook(
     cellDates: true,
   });
   const sheet = workbook.Sheets[workbook.SheetNames[0] ?? ""];
-  if (!sheet) return [];
+  if (!sheet) {
+    throw new Error("排期 Excel 格式错误：未找到工作表");
+  }
   const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
     header: 1,
     defval: "",
@@ -144,7 +146,12 @@ export async function parseScheduleWorkbook(
       ): column is { header: string; index: number; match: RegExpExecArray } =>
         Boolean(column.match),
     );
-  if (nameIndex < 0 || dateColumns.length === 0) return [];
+  if (nameIndex < 0 || dateColumns.length === 0) {
+    const missing: string[] = [];
+    if (nameIndex < 0) missing.push("姓名");
+    if (dateColumns.length === 0) missing.push("YYYY-MM-DD 日期列");
+    throw new Error(`排期 Excel 格式错误：缺少${missing.join("和")}列`);
+  }
   const rows: ScheduleImportRow[] = [];
   for (const rawRow of matrix.slice(1)) {
     const studentName = workbookCellText(rawRow[nameIndex]).trim();
@@ -220,11 +227,21 @@ export function getImportErrors(
 /**
  * Save the row-level import errors as a CSV file through the platform adapter.
  */
-export async function downloadImportErrorsCsv(jobId: string): Promise<void> {
-  const result = await getImportErrors(jobId, 200, 0);
+export async function downloadImportErrorsCsv(jobId: string): Promise<boolean> {
+  const errors: ImportError[] = [];
+  const limit = 200;
+  let offset = 0;
+  let total = Number.POSITIVE_INFINITY;
+  while (errors.length < total) {
+    const result = await getImportErrors(jobId, limit, offset);
+    errors.push(...result.errors);
+    total = result.total;
+    if (result.errors.length === 0 || errors.length >= total) break;
+    offset += result.errors.length;
+  }
   const rows = [
     ["Sheet", "行号", "列", "错误码", "信息", "原始值"],
-    ...result.errors.map((error) => [
+    ...errors.map((error) => [
       error.sheet,
       error.rowNumber,
       error.columnName,
@@ -236,7 +253,7 @@ export async function downloadImportErrorsCsv(jobId: string): Promise<void> {
   const csv = rows
     .map((row) => row.map((value) => csvCell(value)).join(","))
     .join("\r\n");
-  await getPlatformAdapter().saveFile(
+  return getPlatformAdapter().saveFile(
     new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }),
     `import-errors-${jobId}.csv`,
   );

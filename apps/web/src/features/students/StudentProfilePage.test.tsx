@@ -32,7 +32,7 @@ function renderProfilePage(adapter: Record<string, unknown>) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/students/${STUDENT}/profile`]}>
         <AntApp>
@@ -47,6 +47,7 @@ function renderProfilePage(adapter: Record<string, unknown>) {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...result, queryClient };
 }
 
 describe("StudentProfilePage", () => {
@@ -122,5 +123,68 @@ describe("StudentProfilePage", () => {
     await waitFor(() => expect(deleteStudent).toHaveBeenCalledTimes(1));
     // 失败后仍停留在资料页，可以重试。
     expect(screen.getByText("学生资料")).toBeVisible();
+  });
+
+  it("preserves dirty form values across a background refetch", async () => {
+    const user = userEvent.setup({ delay: null });
+    const refreshed = { ...studentView, name: "服务端姓名", version: 4 };
+    const getStudent = vi
+      .fn()
+      .mockResolvedValueOnce(studentView)
+      .mockResolvedValueOnce(refreshed);
+    const { queryClient } = renderProfilePage({
+      getStudent,
+      getWeeklyPattern: () => Promise.reject(new ApiError(404, "不存在")),
+      getWeekPlan: () => Promise.reject(new ApiError(404, "不存在")),
+      listStudentTracks: () => Promise.resolve([]),
+    });
+
+    const nameInput = await screen.findByRole("textbox", { name: "姓名" });
+    await user.clear(nameInput);
+    await user.type(nameInput, "我的草稿");
+    await queryClient.invalidateQueries({ queryKey: ["student", STUDENT] });
+    await waitFor(() => expect(getStudent).toHaveBeenCalledTimes(2));
+    expect(nameInput).toHaveValue("我的草稿");
+  });
+
+  it("preserves edits after a 409 and disables the form while archived", async () => {
+    const user = userEvent.setup({ delay: null });
+    const conflictError = new ApiError(
+      409,
+      "资料已被其他操作更新",
+      "VERSION_CONFLICT",
+      undefined,
+      [],
+      { version: 4 },
+    );
+    const updateStudent = vi.fn(() => Promise.reject(conflictError));
+    const { queryClient } = renderProfilePage({
+      getStudent: () => Promise.resolve(studentView),
+      getWeeklyPattern: () => Promise.reject(new ApiError(404, "不存在")),
+      getWeekPlan: () => Promise.reject(new ApiError(404, "不存在")),
+      listStudentTracks: () => Promise.resolve([]),
+      updateStudent,
+    });
+    const nameInput = await screen.findByRole("textbox", { name: "姓名" });
+    await user.clear(nameInput);
+    await user.type(nameInput, "冲突草稿");
+    await user.click(screen.getByRole("button", { name: /保\s*存/ }));
+    await screen.findByText("资料状态已变化");
+    expect(nameInput).toHaveValue("冲突草稿");
+    expect(updateStudent).toHaveBeenCalledWith(
+      STUDENT,
+      expect.objectContaining({ expectedVersion: 3 }),
+    );
+
+    const archived = { ...studentView, status: "ARCHIVED" as const };
+    queryClient.setQueryData(["student", STUDENT], archived);
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "姓名" })).toBeDisabled(),
+    );
+    expect(screen.getByRole("button", { name: /保\s*存/ })).toBeDisabled();
+    queryClient.setQueryData(["student", STUDENT], studentView);
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "姓名" })).not.toBeDisabled(),
+    );
   });
 });

@@ -65,6 +65,11 @@ const priorityFlagColor: Record<Priority, string | null> = {
   NONE: null,
 };
 
+// Keep the single-click action pending until the browser has had a chance to
+// dispatch the matching double-click event. This avoids opening details before
+// a rename gesture can cancel the first click.
+const SINGLE_CLICK_DELAY_MS = 500;
+
 function priorityLabel(p: Priority): string {
   switch (p) {
     case "HIGH":
@@ -149,6 +154,13 @@ export function TaskCard({
   );
   const ordinalLabel = itemOrdinalLabel(task);
   const seriesCandidates = parseSeriesTitleCandidates(task.title);
+
+  const clearTitleClickTimer = () => {
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+  };
 
   function runSeriesAction(
     action: "next" | "convert",
@@ -294,21 +306,23 @@ export function TaskCard({
               ) : (
                 <button
                   type="button"
-                  onClick={() => {
-                    if (clickTimerRef.current) {
-                      clearTimeout(clickTimerRef.current);
+                  onClick={(event) => {
+                    // React dispatches a second click (detail === 2) before
+                    // the dblclick event. Cancel the pending single action at
+                    // both points so details are never opened for a rename.
+                    if (event.detail > 1) {
+                      clearTitleClickTimer();
+                      return;
                     }
+                    clearTitleClickTimer();
                     clickTimerRef.current = setTimeout(() => {
                       clickTimerRef.current = null;
                       onViewDetail(task);
-                    }, 250);
+                    }, SINGLE_CLICK_DELAY_MS);
                   }}
                   onDoubleClick={(event) => {
+                    clearTitleClickTimer();
                     if (!onRename || !actionable) return;
-                    if (clickTimerRef.current) {
-                      clearTimeout(clickTimerRef.current);
-                      clickTimerRef.current = null;
-                    }
                     event.preventDefault();
                     event.stopPropagation();
                     setRenameDraft(task.title);

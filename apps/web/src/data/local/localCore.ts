@@ -50,6 +50,15 @@ export class LocalCore {
     return rows[0];
   }
 
+  /** Commands that create new work must never target paused/archived students. */
+  async activeStudentRow(studentId: string): Promise<DbRow> {
+    const student = await this.studentRow(studentId);
+    if (student.status !== "ACTIVE") {
+      throw new ApiError(409, "学生未处于活动状态", "STUDENT_NOT_ACTIVE");
+    }
+    return student;
+  }
+
   /** 模板行是跨模块读路径：模板、轨道、长期任务都要先确认模板存在。 */
   async templateRow(templateId: string): Promise<DbRow> {
     const rows = await this.storage.select<DbRow>(

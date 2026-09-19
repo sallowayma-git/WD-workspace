@@ -182,6 +182,40 @@ describe("SqliteLocalDataAdapter", () => {
     });
   });
 
+  it("rejects a stale student profile update instead of using the database version", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      studentCode: "S-STALE",
+      name: "旧版本学生",
+      defaultDevicePolicy: "CONFIRM",
+    })) as { id: string; version: number };
+
+    await adapter.updateStudent(student.id, {
+      name: "第一次更新",
+      status: "ACTIVE",
+      defaultDevicePolicy: "CONFIRM",
+      subjectPreferences: [],
+      expectedVersion: student.version,
+    });
+    await expect(
+      adapter.updateStudent(student.id, {
+        name: "不应覆盖",
+        status: "ACTIVE",
+        defaultDevicePolicy: "CONFIRM",
+        subjectPreferences: [],
+        expectedVersion: student.version,
+      }),
+    ).rejects.toMatchObject({
+      code: "LOCAL_DATABASE_ERROR",
+      status: 409,
+    } satisfies Partial<ApiError>);
+    await expect(adapter.getStudent(student.id)).resolves.toMatchObject({
+      name: "第一次更新",
+      version: student.version + 1,
+    });
+  });
+
   it("persists urgency labels and clears references when deleting one", async () => {
     storage = new NodeSqliteStorage();
     const adapter = new SqliteLocalDataAdapter(storage);
@@ -1802,6 +1836,20 @@ describe("SqliteLocalDataAdapter", () => {
       scheduled_date: "2026-08-19",
       status: "PENDING",
     });
+    await expect(
+      adapter.createAdHocTask({
+        studentId: student.id,
+        scheduledDate: "2026-08-19",
+        title: "休息覆盖后新增",
+        idempotencyKey: crypto.randomUUID(),
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    await expect(
+      storage.select<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM task_instance WHERE student_id = $1 AND scheduled_date = $2 AND title_snapshot = $3",
+        [student.id, "2026-08-19", "休息覆盖后新增"],
+      ),
+    ).resolves.toEqual([{ count: 0 }]);
 
     await expect(
       adapter.setStudentRestDay(student.id, "2026-08-19", false),
@@ -1812,6 +1860,43 @@ describe("SqliteLocalDataAdapter", () => {
       view: "day",
     })) as { days: Array<{ available: boolean }> };
     expect(availability.days[0].available).toBe(true);
+  });
+
+  it("writes an available override when cancelling a weekly off day without an override", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      studentCode: "S-WEEKLY-OFF-CANCEL",
+      name: "取消周休学生",
+      defaultDevicePolicy: "ALLOWED",
+    })) as { id: string };
+    await adapter.saveWeeklyPattern(student.id, {
+      effectiveFrom: "2026-08-17",
+      days: Array.from({ length: 7 }, (_, index) => ({
+        dayOfWeek: index + 1,
+        available: index < 5,
+        availableMinutes: index < 5 ? 90 : 0,
+        devicePolicyOverride: null,
+      })),
+    });
+
+    await adapter.setStudentRestDay(student.id, "2026-08-22", false);
+    await expect(
+      storage.select<{
+        available: number;
+        source_type: string;
+      }>(
+        "SELECT available, source_type FROM student_date_override WHERE student_id = $1 AND business_date = $2",
+        [student.id, "2026-08-22"],
+      ),
+    ).resolves.toEqual([{ available: 1, source_type: "MANUAL" }]);
+    await expect(
+      adapter.getSchedule(student.id, {
+        from: "2026-08-22",
+        to: "2026-08-22",
+        view: "day",
+      }),
+    ).resolves.toMatchObject({ days: [{ available: true }] });
   });
 
   it("keeps a rest-day task in place when no study day exists for 90 days", async () => {
@@ -2707,6 +2792,78 @@ describe("SqliteLocalDataAdapter", () => {
     ).toEqual(["冲突系列{n}"]);
   });
 
+  it("does not create work for archived students and rechecks stale import plans", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      studentCode: "S-ARCHIVED-GUARD",
+      name: "已归档学生",
+      defaultDevicePolicy: "CONFIRM",
+    })) as { id: string; studentCode: string; name: string };
+    const plan = (await adapter.previewScheduleImport([
+      {
+        studentCode: student.studentCode,
+        studentName: student.name,
+        date: "2026-09-21",
+        titles: ["归档前预览"],
+      },
+    ])) as { toCreate: unknown[] };
+    expect(plan.toCreate).toHaveLength(1);
+
+    await archiveStudent(adapter, student.id);
+    await expect(
+      adapter.previewScheduleImport([
+        {
+          studentCode: student.studentCode,
+          studentName: student.name,
+          date: "2026-09-21",
+          titles: ["归档后预览"],
+        },
+      ]),
+    ).resolves.toMatchObject({
+      toCreate: [],
+      unmatchedStudents: [{ rowNumbers: [1] }],
+    });
+    await expect(adapter.executeScheduleImport(plan)).rejects.toMatchObject({
+      code: "STUDENT_NOT_ACTIVE",
+      status: 409,
+    } satisfies Partial<ApiError>);
+    await expect(
+      adapter.createAdHocTask({
+        studentId: student.id,
+        scheduledDate: "2026-09-21",
+        title: "归档后普通任务",
+        idempotencyKey: crypto.randomUUID(),
+      }),
+    ).rejects.toMatchObject({
+      code: "STUDENT_NOT_ACTIVE",
+    } satisfies Partial<ApiError>);
+    await expect(
+      adapter.mountLongTask({
+        studentId: student.id,
+        longTaskId: "missing-definition",
+        anchorDate: "2026-09-21",
+        idempotencyKey: crypto.randomUUID(),
+      }),
+    ).rejects.toMatchObject({
+      code: "STUDENT_NOT_ACTIVE",
+    } satisfies Partial<ApiError>);
+    await expect(
+      adapter.mountTrack({
+        studentId: student.id,
+        templateId: "missing-template",
+        templateVersionId: "missing-version",
+        startOrdinal: 1,
+        endOrdinal: 1,
+        startDate: "2026-09-21",
+        createFirstInstance: false,
+        idempotencyKey: crypto.randomUUID(),
+      }),
+    ).rejects.toMatchObject({
+      code: "STUDENT_NOT_ACTIVE",
+    } satisfies Partial<ApiError>);
+  });
+
   it("replays commits made after the first idempotency read and before validation", async () => {
     const racingStorage = new InterleavedSqliteStorage();
     storage = racingStorage;
@@ -3554,6 +3711,9 @@ describe("SqliteLocalDataAdapter", () => {
     expect(plan.unmatchedStudents).toHaveLength(1);
     await expect(adapter.executeScheduleImport(plan)).resolves.toEqual({
       created: 1,
+    });
+    await expect(adapter.executeScheduleImport(plan)).resolves.toEqual({
+      created: 0,
     });
     await expect(
       storage.select<{ source_type: string; schedule_origin: string }>(

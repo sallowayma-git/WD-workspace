@@ -80,7 +80,7 @@ export async function mountTrack(
     idempotencyKey,
     async () => {
       const studentId = requiredString(input, "studentId");
-      await core.studentRow(studentId);
+      await core.activeStudentRow(studentId);
       const template = await core.templateRow(
         requiredString(input, "templateId"),
       );
@@ -125,8 +125,9 @@ export async function mountTrack(
               priority, allow_parallel_items, scheduling_policy,
               duration_override_minutes, device_policy_override, note,
               version, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, 'ACTIVE', $5, $5, $6, $7, $8, $8,
-                      $9, 0, $10, NULL, NULL, $11, 0, $12, $12)`,
+            ) SELECT $1, s.id, $3, $4, 'ACTIVE', $5, $5, $6, $7, $8, $8,
+                      $9, 0, $10, NULL, NULL, $11, 0, $12, $12
+                FROM student s WHERE s.id = $2 AND s.status = 'ACTIVE'`,
           values: [
             trackId,
             studentId,

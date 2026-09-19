@@ -12,9 +12,10 @@ import {
   Space,
   Tag,
   Typography,
+  type InputRef,
 } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ApiError } from "../../lib/api/ApiError";
 import {
@@ -38,13 +39,17 @@ type StudentForm = {
 
 export function StudentListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [search, setSearch] = useState(searchParams.get("search") ?? "");
-  const [searchInput, setSearchInput] = useState(
-    searchParams.get("search") ?? "",
-  );
-  const [statusFilter, setStatusFilter] = useState<
-    "CURRENT" | "ARCHIVED" | "ALL"
-  >(searchParams.get("status") === "ARCHIVED" ? "ARCHIVED" : "CURRENT");
+  // URL filters are the source of truth so browser back/forward restores both
+  // the query and the archived/current view before the query is refetched.
+  const search = searchParams.get("search") ?? "";
+  const statusParam = searchParams.get("status");
+  const statusFilter: "CURRENT" | "ARCHIVED" | "ALL" =
+    statusParam === "ARCHIVED"
+      ? "ARCHIVED"
+      : statusParam === "ALL"
+        ? "ALL"
+        : "CURRENT";
+  const searchInputRef = useRef<InputRef>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [statusLabelsOpen, setStatusLabelsOpen] = useState(false);
   const [form] = Form.useForm<StudentForm>();
@@ -91,6 +96,17 @@ export function StudentListPage() {
       });
     },
   });
+
+  const updateFilters = (
+    nextSearch: string,
+    nextStatus: typeof statusFilter,
+  ) => {
+    const next = new URLSearchParams(searchParams);
+    if (nextSearch) next.set("search", nextSearch);
+    else next.delete("search");
+    next.set("status", nextStatus);
+    setSearchParams(next);
+  };
 
   if (studentsQuery.isPending) {
     return (
@@ -153,20 +169,25 @@ export function StudentListPage() {
         <Space.Compact style={{ width: "min(100%, 560px)" }}>
           <Input
             aria-label="搜索学生"
-            value={searchInput}
-            onChange={(event) => setSearchInput(event.target.value)}
-            onPressEnter={() => {
-              setSearch(searchInput);
-              setSearchParams({ search: searchInput, status: statusFilter });
-            }}
+            key={search}
+            ref={searchInputRef}
+            defaultValue={search}
+            onPressEnter={() =>
+              updateFilters(
+                searchInputRef.current?.input?.value ?? "",
+                statusFilter,
+              )
+            }
             placeholder="姓名、别名或学生编号"
             prefix={<SearchOutlined />}
           />
           <Button
-            onClick={() => {
-              setSearch(searchInput);
-              setSearchParams({ search: searchInput, status: statusFilter });
-            }}
+            onClick={() =>
+              updateFilters(
+                searchInputRef.current?.input?.value ?? "",
+                statusFilter,
+              )
+            }
           >
             搜索
           </Button>
@@ -179,10 +200,7 @@ export function StudentListPage() {
               { value: "ARCHIVED", label: "已归档" },
               { value: "ALL", label: "全部" },
             ]}
-            onChange={(value) => {
-              setStatusFilter(value);
-              setSearchParams({ search, status: value });
-            }}
+            onChange={(value) => updateFilters(search, value)}
           />
         </Space.Compact>
         {visibleStudents.length === 0 ? (

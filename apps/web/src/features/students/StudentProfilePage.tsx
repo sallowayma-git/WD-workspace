@@ -21,7 +21,7 @@ import {
   Typography,
 } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ApiError } from "../../lib/api/ApiError";
 import { useBusinessDate } from "../foundation/useBusinessDate";
@@ -160,6 +160,10 @@ export function StudentProfilePage() {
   const queryClient = useQueryClient();
   const { message } = App.useApp();
   const [form] = Form.useForm<StudentFormValues>();
+  // A profile query can refetch while the user is typing (including after a
+  // 409). Keep a ref so the synchronization effect can distinguish a server
+  // snapshot from a draft that must remain untouched.
+  const formDirtyRef = useRef(false);
   // D8 / AC-013: on a 409 version conflict we must preserve the user's
   // unsubmitted edits and let them choose to "overwrite with my version"
   // (re-submit using the server's latest version) or "discard changes"
@@ -172,6 +176,7 @@ export function StudentProfilePage() {
   const [mountOpen, setMountOpen] = useState(false);
   const [longTaskMountOpen, setLongTaskMountOpen] = useState(false);
   const [statusLabelsOpen, setStatusLabelsOpen] = useState(false);
+  const watchedTags = Form.useWatch("tags", form) as TagDraft[] | undefined;
   const businessDate = useBusinessDate();
 
   const studentQuery = useQuery({
@@ -187,14 +192,22 @@ export function StudentProfilePage() {
   });
 
   useEffect(() => {
-    if (studentQuery.data) {
-      form.setFieldsValue(toFormValues(studentQuery.data));
-    }
+    formDirtyRef.current = false;
+    void Promise.resolve().then(() => setConflict(null));
+  }, [studentId]);
+
+  useEffect(() => {
+    if (!studentQuery.data || formDirtyRef.current) return;
+    form.setFieldsValue(toFormValues(studentQuery.data));
   }, [form, studentQuery.data]);
 
   const updateMutation = useMutation({
-    mutationFn: (values: StudentFormValues) =>
-      updateStudent(studentId as string, {
+    mutationFn: (input: {
+      values: StudentFormValues;
+      expectedVersion: number;
+    }) => {
+      const values = input.values;
+      return updateStudent(studentId as string, {
         name: values.name,
         alias: values.alias && values.alias.length > 0 ? values.alias : null,
         status: values.status,
@@ -224,14 +237,20 @@ export function StudentProfilePage() {
             targetRatio: pref.targetRatio,
             note: pref.note && pref.note.length > 0 ? pref.note : null,
           })),
-        expectedVersion: studentQuery.data?.version ?? 0,
-      }),
-    onSuccess: async () => {
+        expectedVersion: input.expectedVersion,
+      });
+    },
+    onSuccess: async (updated) => {
+      // Use the mutation response as the new clean baseline immediately. The
+      // subsequent query invalidation is then harmless even if it briefly
+      // exposes the previous cached snapshot.
+      form.setFieldsValue(toFormValues(updated));
+      formDirtyRef.current = false;
       setConflict(null);
       await queryClient.invalidateQueries({ queryKey: ["student", studentId] });
       await queryClient.invalidateQueries({ queryKey: ["students"] });
     },
-    onError: (error, values) => {
+    onError: (error, input) => {
       if (error instanceof ApiError && error.status === 409) {
         const currentVersion =
           typeof error.current.version === "number"
@@ -243,7 +262,7 @@ export function StudentProfilePage() {
         setConflict({
           message: error.message,
           currentVersion,
-          pendingValues: values,
+          pendingValues: input.values,
         });
       } else {
         setConflict(null);
@@ -260,8 +279,13 @@ export function StudentProfilePage() {
   // edits against the server's latest version (already reloaded into
   // studentQuery.data via the 409 invalidation below).
   const handleOverwrite = () => {
-    if (!conflict?.pendingValues) return;
-    updateMutation.mutate(conflict.pendingValues);
+    if (!conflict) return;
+    const currentValues = form.getFieldsValue(true) as StudentFormValues;
+    updateMutation.mutate({
+      values: currentValues,
+      expectedVersion:
+        conflict.currentVersion ?? studentQuery.data?.version ?? 0,
+    });
   };
 
   // AC-013: "discard changes" — roll the form back to the server state.
@@ -269,6 +293,7 @@ export function StudentProfilePage() {
     if (studentQuery.data) {
       form.setFieldsValue(toFormValues(studentQuery.data));
     }
+    formDirtyRef.current = false;
     setConflict(null);
   };
 
@@ -415,6 +440,7 @@ export function StudentProfilePage() {
                   <Button
                     type="primary"
                     loading={updateMutation.isPending}
+                    disabled={student.status === "ARCHIVED"}
                     onClick={handleOverwrite}
                   >
                     用我的版本覆盖
@@ -438,7 +464,17 @@ export function StudentProfilePage() {
         <Form<StudentFormValues>
           form={form}
           layout="vertical"
-          onFinish={(values) => updateMutation.mutate(values)}
+          disabled={student.status === "ARCHIVED" || updateMutation.isPending}
+          onValuesChange={() => {
+            formDirtyRef.current = true;
+          }}
+          onFinish={(values) => {
+            if (student.status === "ARCHIVED") return;
+            updateMutation.mutate({
+              values,
+              expectedVersion: studentQuery.data?.version ?? 0,
+            });
+          }}
         >
           <Card title="基本信息">
             <Form.Item
@@ -474,10 +510,10 @@ export function StudentProfilePage() {
             </Form.Item>
             <Form.Item label="标签" style={{ marginBottom: 0 }}>
               <TagsEditor
-                value={formatTags(
-                  (form.getFieldValue("tags") as TagDraft[] | undefined) ?? [],
-                )}
+                value={formatTags(watchedTags ?? [])}
+                disabled={student.status === "ARCHIVED"}
                 onChange={(text) => {
+                  formDirtyRef.current = true;
                   const parsed = parseTagsInput(text);
                   form.setFieldValue("tags", parsed);
                 }}
@@ -490,12 +526,14 @@ export function StudentProfilePage() {
           <Card title="学科倾向" style={{ marginTop: 16 }}>
             <SubjectPreferencesEditor
               submitPending={updateMutation.isPending}
+              disabled={student.status === "ARCHIVED"}
             />
             <Space style={{ marginTop: 16 }}>
               <Button
                 type="primary"
                 htmlType="submit"
                 loading={updateMutation.isPending}
+                disabled={student.status === "ARCHIVED"}
               >
                 保存
               </Button>
@@ -504,7 +542,9 @@ export function StudentProfilePage() {
                   if (studentQuery.data) {
                     form.setFieldsValue(toFormValues(studentQuery.data));
                   }
+                  formDirtyRef.current = false;
                 }}
+                disabled={student.status === "ARCHIVED"}
               >
                 重置
               </Button>
@@ -732,14 +772,17 @@ function StudyConditionSummary({
 function TagsEditor({
   value,
   onChange,
+  disabled = false,
 }: {
   value: string;
   onChange: (text: string) => void;
+  disabled?: boolean;
 }) {
   return (
     <Input
       aria-label="学生标签"
-      defaultValue={value}
+      value={value}
+      disabled={disabled}
       onChange={(event) => {
         onChange(event.target.value);
       }}
@@ -754,8 +797,10 @@ function TagsEditor({
 // Select with allowClear so teachers can pick a preset OR type a custom subject.
 function SubjectPreferencesEditor({
   submitPending,
+  disabled = false,
 }: {
   submitPending: boolean;
+  disabled?: boolean;
 }) {
   return (
     <Form.List name="subjectPreferences">
@@ -779,7 +824,7 @@ function SubjectPreferencesEditor({
                     note: "",
                   })
                 }
-                disabled={submitPending}
+                disabled={submitPending || disabled}
               >
                 添加学科倾向
               </Button>
@@ -806,7 +851,7 @@ function SubjectPreferencesEditor({
                     allowClear
                     placeholder="科目"
                     options={SUBJECT_OPTIONS}
-                    disabled={submitPending}
+                    disabled={submitPending || disabled}
                   />
                 </Form.Item>
                 <Form.Item
@@ -818,7 +863,7 @@ function SubjectPreferencesEditor({
                   <Select
                     placeholder="优先级"
                     options={PRIORITY_OPTIONS}
-                    disabled={submitPending}
+                    disabled={submitPending || disabled}
                   />
                 </Form.Item>
                 <Form.Item
@@ -832,7 +877,7 @@ function SubjectPreferencesEditor({
                     max={100}
                     addonAfter="%"
                     placeholder="目标比例"
-                    disabled={submitPending}
+                    disabled={submitPending || disabled}
                     style={{ width: "100%" }}
                   />
                 </Form.Item>
@@ -844,7 +889,7 @@ function SubjectPreferencesEditor({
                   <Input
                     placeholder="备注（可选）"
                     maxLength={200}
-                    disabled={submitPending}
+                    disabled={submitPending || disabled}
                   />
                 </Form.Item>
                 <Button
@@ -852,7 +897,7 @@ function SubjectPreferencesEditor({
                   danger
                   icon={<DeleteOutlined />}
                   onClick={() => remove(field.name)}
-                  disabled={submitPending}
+                  disabled={submitPending || disabled}
                   aria-label="删除该学科倾向"
                 />
               </Space>
@@ -868,7 +913,7 @@ function SubjectPreferencesEditor({
                   note: "",
                 })
               }
-              disabled={submitPending}
+              disabled={submitPending || disabled}
               style={{ marginTop: 8 }}
             >
               添加学科倾向

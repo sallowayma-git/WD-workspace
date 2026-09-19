@@ -48,7 +48,8 @@ export async function createAdHocTask(
   return core.idempotentCommand(
     idempotencyKey,
     async () => {
-      await core.studentRow(requiredString(input, "studentId"));
+      const studentId = requiredString(input, "studentId");
+      await core.activeStudentRow(studentId);
       const scheduledDate = requiredString(input, "scheduledDate");
       // 日历有效性校验：2026-02-31 这类形状合法但不存在的日期必须在这里
       // 拒绝（422 INVALID_DATE），否则原样字符串入库后对排期/今日视图永远
@@ -64,11 +65,17 @@ export async function createAdHocTask(
               status, title_snapshot, duration_minutes_snapshot,
               requires_device_snapshot, schedule_origin, locked, note,
               manual_override, star, version, created_at, updated_at
-            ) VALUES ($1, $2, 'AD_HOC', $3, $3, 'PENDING', $4, $5, $6,
-                      'AD_HOC', $7, $8, 0, 0, 0, $9, $9)`,
+            ) SELECT $1, s.id, 'AD_HOC', $3, $3, 'PENDING', $4, $5, $6,
+                      'AD_HOC', $7, $8, 0, 0, 0, $9, $9
+                FROM student s WHERE s.id = $2 AND s.status = 'ACTIVE'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM student_date_override rest
+                    WHERE rest.student_id = s.id
+                      AND rest.business_date = $3 AND rest.available = 0
+                  )`,
             values: [
               id,
-              requiredString(input, "studentId"),
+              studentId,
               scheduledDate,
               requiredString(input, "title"),
               record(input, "durationMinutes") ?? null,

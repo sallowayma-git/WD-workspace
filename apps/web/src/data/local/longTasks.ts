@@ -266,7 +266,7 @@ export async function mountLongTask(
     idempotencyKey,
     async () => {
       const studentId = requiredString(input, "studentId");
-      await core.studentRow(studentId);
+      await core.activeStudentRow(studentId);
       const definition = await core.templateRow(
         requiredString(input, "longTaskId"),
       );
@@ -776,9 +776,10 @@ function sequenceTrackInsertStatement(input: {
             definition_name_snapshot, title_pattern_snapshot, priority,
             allow_parallel_items, scheduling_policy, duration_override_minutes,
             device_policy_override, note, version, created_at, updated_at
-          ) VALUES ($1, $2, $3, NULL, 'SEQUENCE', 'ACTIVE', $4, $4, $5,
+          ) SELECT $1, s.id, $3, NULL, 'SEQUENCE', 'ACTIVE', $4, $4, $5,
                     1, $6, $6, $7, $8, 50, 0, 'AUTO', NULL, NULL, NULL,
-                    0, $9, $9)`,
+                    0, $9, $9
+              FROM student s WHERE s.id = $2 AND s.status = 'ACTIVE'`,
     values: [
       input.trackId,
       input.studentId,

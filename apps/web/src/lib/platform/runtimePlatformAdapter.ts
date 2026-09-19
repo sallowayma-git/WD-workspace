@@ -11,13 +11,14 @@ import { writeFile } from "@tauri-apps/plugin-fs";
  */
 const tauriPlatformAdapter: PlatformAdapter = {
   ...browserPlatformAdapter,
-  async saveFile(data: Blob, suggestedName: string): Promise<void> {
+  async saveFile(data: Blob, suggestedName: string): Promise<boolean> {
     const target = await save({
       defaultPath: suggestedName,
     });
-    if (!target) return;
+    if (!target) return false;
 
     await writeFile(target, new Uint8Array(await data.arrayBuffer()));
+    return true;
   },
 };
 

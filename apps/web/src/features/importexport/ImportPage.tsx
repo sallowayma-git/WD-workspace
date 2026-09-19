@@ -471,6 +471,10 @@ function ScheduleImportPanel() {
     showUploadList: false,
     beforeUpload: (file) => {
       setError(null);
+      setRows(null);
+      setPlan(null);
+      previewMutation.reset();
+      executeMutation.reset();
       void parseScheduleWorkbook(file)
         .then((parsed) => {
           setRows(parsed);
@@ -492,6 +496,27 @@ function ScheduleImportPanel() {
         <p className="ant-upload-hint">日期表头需以 YYYY-MM-DD 开头</p>
       </Dragger>
       {error ? <Alert type="error" showIcon message={error} /> : null}
+      {executeMutation.isError ? (
+        <Alert
+          type="error"
+          showIcon
+          title="排期导入失败"
+          description={
+            executeMutation.error instanceof ApiError
+              ? executeMutation.error.message
+              : executeMutation.error instanceof Error
+                ? executeMutation.error.message
+                : "排期导入失败，请重试"
+          }
+          action={
+            plan ? (
+              <Button type="link" onClick={() => executeMutation.mutate(plan)}>
+                重试
+              </Button>
+            ) : null
+          }
+        />
+      ) : null}
       {rows && plan ? (
         <Card
           type="inner"

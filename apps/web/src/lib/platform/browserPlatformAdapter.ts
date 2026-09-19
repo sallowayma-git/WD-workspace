@@ -28,14 +28,14 @@ export const browserPlatformAdapter: PlatformAdapter = {
       input.click();
     });
   },
-  saveFile(data: Blob, suggestedName: string): Promise<void> {
+  saveFile(data: Blob, suggestedName: string): Promise<boolean> {
     const url = URL.createObjectURL(data);
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = suggestedName;
     anchor.click();
     URL.revokeObjectURL(url);
-    return Promise.resolve();
+    return Promise.resolve(true);
   },
   async copyText(text: string): Promise<void> {
     if (!navigator.clipboard?.writeText) {
