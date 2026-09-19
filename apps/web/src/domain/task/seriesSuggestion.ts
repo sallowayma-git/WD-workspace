@@ -45,6 +45,33 @@ interface SeriesGroup {
   ordinals: Set<number>;
 }
 
+/**
+ * Parsing is intentionally broad for explicit user actions. Suggestions are
+ * conservative: a four-digit year and ordinary quantity phrases should not
+ * create a noisy “long task” prompt.
+ */
+function isSuggestionCounter(
+  parsed: ReturnType<typeof parseSeriesTitle>,
+): boolean {
+  if (!parsed) return false;
+  if (
+    parsed.digits.length === 4 &&
+    parsed.number >= 1900 &&
+    parsed.number <= 2100
+  ) {
+    return false;
+  }
+  const suffix = parsed.suffix.trim();
+  if (
+    /^(个|名|人|页|道|题|次|分钟|分|秒|岁|米|公里|kg|克|本|件|条|门|章|节)/i.test(
+      suffix,
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
 /** 能原地升级的前提，和 adapter 的 convertTaskToLongTask 一致。 */
 function isConvertible(row: SeriesAssignmentRow): boolean {
   return (
@@ -77,10 +104,15 @@ export function detectSeriesSuggestions(
     if (row.sourceType === "TRACK" || row.status === "CANCELLED") continue;
     const parsed = parseSeriesTitle(row.title);
     if (!parsed) continue;
+    if (!isSuggestionCounter(parsed)) continue;
     // 纯数字标题（"2024"）没有系列名，不成系列。
     const seriesName = seriesDisplayName(parsed.prefix);
     if (seriesName.length === 0) continue;
     const normalizedKey = seriesNormalizedKey(parsed.prefix);
+    const titlePattern = buildSeriesTitlePattern({
+      prefix: parsed.prefix,
+      suffix: parsed.suffix,
+    });
     if (excludeKeys.has(normalizedKey)) continue;
     // 前缀相同但后缀不同（"第3天" / "第3"）是两个系列。
     const groupKey = `${normalizedKey} ${parsed.suffix}`;
@@ -89,10 +121,7 @@ export function detectSeriesSuggestions(
       group = {
         normalizedKey,
         seriesName,
-        titlePattern: buildSeriesTitlePattern({
-          prefix: parsed.prefix,
-          suffix: parsed.suffix,
-        }),
+        titlePattern,
         convertible: new Map(),
         ordinals: new Set(),
       };

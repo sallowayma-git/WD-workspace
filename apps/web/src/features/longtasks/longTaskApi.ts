@@ -122,13 +122,15 @@ export type ConvertToLongTaskResult = z.infer<typeof convertResultSchema>;
 /** 把一个待办的普通任务原地升级为长期任务轨道的当前项。 */
 export function convertTaskToLongTask(
   taskId: string,
-  input: { expectedVersion?: number },
+  input: { expectedVersion?: number; numberIndex?: number },
 ): Promise<ConvertToLongTaskResult> {
+  const command: Record<string, unknown> = {
+    taskId,
+    expectedVersion: input.expectedVersion ?? null,
+    idempotencyKey: crypto.randomUUID(),
+  };
+  if (input.numberIndex != null) command.numberIndex = input.numberIndex;
   return getDataAdapter()
-    .convertTaskToLongTask(taskId, {
-      taskId,
-      expectedVersion: input.expectedVersion ?? null,
-      idempotencyKey: crypto.randomUUID(),
-    })
+    .convertTaskToLongTask(taskId, command)
     .then((value) => convertResultSchema.parse(value));
 }

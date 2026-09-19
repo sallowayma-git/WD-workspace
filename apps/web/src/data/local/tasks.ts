@@ -507,7 +507,7 @@ export async function updateTask(
       {
         sql: `UPDATE task_instance SET
               title_snapshot = COALESCE($1, title_snapshot),
-              short_title_snapshot = CASE WHEN $1 IS NOT NULL AND source_type = 'AD_HOC' THEN NULL ELSE short_title_snapshot END,
+              short_title_snapshot = CASE WHEN $1 IS NOT NULL THEN NULL ELSE short_title_snapshot END,
               note = CASE WHEN $2 IS NULL THEN note ELSE $2 END,
               priority = CASE WHEN $3 IS NULL THEN priority ELSE $3 END,
               star = CASE WHEN $4 IS NULL THEN star ELSE $4 END,
@@ -580,6 +580,7 @@ export async function duplicateTask(
 export async function createNextSeriesTask(
   core: LocalCore,
   taskId: string,
+  input: Record<string, unknown> = {},
 ): Promise<unknown> {
   const source = await core.taskRow(taskId);
   const sourceDate =
@@ -606,7 +607,11 @@ export async function createNextSeriesTask(
       "NO_AVAILABLE_STUDY_DATE",
     );
   }
-  const parsed = parseSeriesTitle(text(source, "title_snapshot"));
+  const numberIndex =
+    record(input, "numberIndex") != null
+      ? requiredNumber(input, "numberIndex")
+      : undefined;
+  const parsed = parseSeriesTitle(text(source, "title_snapshot"), numberIndex);
   let title = text(source, "title_snapshot");
   let shortTitle = nullableText(source, "short_title_snapshot");
   if (parsed) {
@@ -618,7 +623,10 @@ export async function createNextSeriesTask(
     );
     let max = parsed.number;
     for (const row of rows) {
-      const candidate = parseSeriesTitle(text(row, "title_snapshot"));
+      const candidate = parseSeriesTitle(
+        text(row, "title_snapshot"),
+        numberIndex,
+      );
       if (candidate && isSameSeries(candidate, parsed)) {
         max = Math.max(max, candidate.number);
       }
@@ -626,7 +634,9 @@ export async function createNextSeriesTask(
     title = formatSeriesTitle(parsed, max + 1);
     // 短标题若是同一系列的编号形式（“真题24”之于“真题2024”），按主标题
     // 前进的增量同步 +1，保持缩写关系；其他形态原样保留。
-    const shortParsed = shortTitle ? parseSeriesTitle(shortTitle) : null;
+    const shortParsed = shortTitle
+      ? parseSeriesTitle(shortTitle, numberIndex)
+      : null;
     if (shortTitle && shortParsed && isSameSeries(shortParsed, parsed)) {
       shortTitle = formatSeriesTitle(
         shortParsed,

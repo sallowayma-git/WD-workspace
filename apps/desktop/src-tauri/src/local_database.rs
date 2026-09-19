@@ -46,6 +46,11 @@ fn migrator() -> Migrator {
             "sequence invariants",
             include_str!("../migrations/0003_sequence_invariants.sql"),
         ),
+        migration(
+            4,
+            "customer feedback round 1",
+            include_str!("../migrations/0004_customer_feedback_round1.sql"),
+        ),
     ];
     Migrator {
         migrations: Cow::Owned(migrations),
@@ -380,8 +385,64 @@ mod tests {
             super::migrator().run(&pool).await.expect("reopen");
 
             // 账本行没被改写，说明真的一条都没重跑。
-            assert_eq!(ledger.len(), 3);
+            assert_eq!(ledger.len(), 4);
             assert_eq!(ledger, ledger_rows(&pool).await);
+        });
+    }
+
+    #[test]
+    fn upgrades_v3_with_customer_feedback_fields_without_changing_existing_rows() {
+        tauri::async_runtime::block_on(async {
+            let pool = memory_pool().await;
+            let v1 = super::migration(
+                1,
+                "local core",
+                include_str!("../migrations/0001_local_core.sql"),
+            );
+            let v2 = super::migration(
+                2,
+                "sequence long task",
+                include_str!("../migrations/0002_sequence_long_task.sql"),
+            );
+            let v3 = super::migration(
+                3,
+                "sequence invariants",
+                include_str!("../migrations/0003_sequence_invariants.sql"),
+            );
+            Migrator {
+                migrations: Cow::Owned(vec![v1, v2, v3]),
+                ignore_missing: false,
+                locking: true,
+                no_tx: false,
+            }
+            .run(&pool)
+            .await
+            .expect("apply v3");
+
+            sqlx::query(
+                "INSERT INTO student(id, student_code, name, class_type) VALUES ('student-1', 'S1', 'Student', 'Class A')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed v3 student");
+
+            super::migrator().run(&pool).await.expect("upgrade to v4");
+
+            let (class_type, exam_date): (String, Option<String>) =
+                sqlx::query_as("SELECT class_type, exam_date FROM student WHERE id = 'student-1'")
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read migrated student");
+            assert_eq!(class_type, "Class A");
+            assert_eq!(exam_date, None);
+
+            let index_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_index_list('student') WHERE name = 'idx_student_exam_date'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("read exam date index");
+            assert_eq!(index_count, 1);
         });
     }
 

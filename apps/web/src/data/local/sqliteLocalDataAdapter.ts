@@ -12,6 +12,8 @@ import * as tracks from "./tracks";
 import * as longTasks from "./longTasks";
 import * as tasks from "./tasks";
 import * as dayClose from "./dayClose";
+import * as scheduleImport from "./scheduleImport";
+import * as statusLabels from "./statusLabels";
 
 export class SqliteLocalDataAdapter implements DataAdapter {
   private readonly core: LocalCore;
@@ -37,8 +39,35 @@ export class SqliteLocalDataAdapter implements DataAdapter {
     return this.templateImport.getImportErrors(jobId, limit, offset);
   }
 
+  previewScheduleImport(rows: unknown): Promise<unknown> {
+    return scheduleImport.previewScheduleImport(this.core, rows);
+  }
+
+  executeScheduleImport(plan: unknown): Promise<unknown> {
+    return scheduleImport.executeScheduleImport(this.core, plan);
+  }
+
   listStudents(query?: string): Promise<unknown> {
     return students.listStudents(this.core, query);
+  }
+
+  listStudentStatusLabels(): Promise<unknown> {
+    return statusLabels.listStudentStatusLabels(this.core);
+  }
+
+  createStudentStatusLabel(input: Record<string, unknown>): Promise<unknown> {
+    return statusLabels.createStudentStatusLabel(this.core, input);
+  }
+
+  updateStudentStatusLabel(
+    labelId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    return statusLabels.updateStudentStatusLabel(this.core, labelId, input);
+  }
+
+  deleteStudentStatusLabel(labelId: string): Promise<void> {
+    return statusLabels.deleteStudentStatusLabel(this.core, labelId);
   }
 
   getStudent(studentId: string): Promise<unknown> {
@@ -54,6 +83,31 @@ export class SqliteLocalDataAdapter implements DataAdapter {
     input: Record<string, unknown>,
   ): Promise<unknown> {
     return students.updateStudent(this.core, studentId, input);
+  }
+
+  getArchiveImpact(studentId: string): Promise<unknown> {
+    return students.getArchiveImpact(this.core, studentId);
+  }
+
+  archiveStudent(
+    studentId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    return students.archiveStudent(this.core, studentId, input);
+  }
+
+  restoreStudent(
+    studentId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    return students.restoreStudent(this.core, studentId, input);
+  }
+
+  updateStudentCard(
+    studentId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    return students.updateStudentCard(this.core, studentId, input);
   }
 
   deleteStudent(studentId: string): Promise<void> {
@@ -80,6 +134,14 @@ export class SqliteLocalDataAdapter implements DataAdapter {
     input: Record<string, unknown>,
   ): Promise<unknown> {
     return availability.saveWeekPlan(this.core, studentId, weekStart, input);
+  }
+
+  setStudentRestDay(
+    studentId: string,
+    date: string,
+    rest: boolean,
+  ): Promise<unknown> {
+    return availability.setStudentRestDay(this.core, studentId, date, rest);
   }
   listTemplates(query?: string): Promise<unknown> {
     return templates.listTemplates(this.core, query);
@@ -211,8 +273,11 @@ export class SqliteLocalDataAdapter implements DataAdapter {
     return tasks.duplicateTask(this.core, taskId, input);
   }
 
-  createNextSeriesTask(taskId: string): Promise<unknown> {
-    return tasks.createNextSeriesTask(this.core, taskId);
+  createNextSeriesTask(
+    taskId: string,
+    input: Record<string, unknown> = {},
+  ): Promise<unknown> {
+    return tasks.createNextSeriesTask(this.core, taskId, input);
   }
 
   createSubTask(
@@ -260,6 +325,14 @@ export class SqliteLocalDataAdapter implements DataAdapter {
 
   getWorkbench(from?: string, to?: string): Promise<unknown> {
     return views.getWorkbench(this.core, from, to);
+  }
+
+  getAppSetting(key: string): Promise<unknown> {
+    return this.core.getAppSetting(key);
+  }
+
+  putAppSetting(key: string, value: string): Promise<unknown> {
+    return this.core.putAppSetting(key, value);
   }
 
   getSchedule(

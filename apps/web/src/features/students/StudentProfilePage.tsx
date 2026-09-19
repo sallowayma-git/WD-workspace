@@ -43,11 +43,21 @@ import {
 import { TrackProgressPanel } from "../planning/TrackProgressPanel";
 import {
   deleteStudent,
+  createStudentStatusLabel,
+  deleteStudentStatusLabel,
   getStudent,
+  listStudentStatusLabels,
   updateStudent,
+  updateStudentStatusLabel,
   type Student,
+  type StudentStatusLabel,
   type SubjectPreferenceInput,
 } from "./studentApi";
+import { StudentStatusLabelModal } from "./StudentStatusLabelModal";
+import {
+  ArchivedStudentBanner,
+  ArchiveStudentButton,
+} from "./StudentArchiveActions";
 
 type DevicePolicy = "ALLOWED" | "NOT_ALLOWED" | "CONFIRM";
 type StudentStatus = Student["status"];
@@ -55,7 +65,6 @@ type StudentStatus = Student["status"];
 const statusOptions: Array<{ value: StudentStatus; label: string }> = [
   { value: "ACTIVE", label: "正常" },
   { value: "PAUSED", label: "暂停" },
-  { value: "ARCHIVED", label: "已归档" },
 ];
 
 const devicePolicyOptions: Array<{ value: DevicePolicy; label: string }> = [
@@ -84,6 +93,7 @@ type StudentFormValues = {
   status: StudentStatus;
   defaultDevicePolicy: DevicePolicy;
   classType: string | null;
+  examDate: string | null;
   enrollmentDate: unknown;
   note: string | null;
   tags: TagDraft[];
@@ -119,6 +129,7 @@ function toFormValues(student: Student): StudentFormValues {
     status: student.status,
     defaultDevicePolicy: student.defaultDevicePolicy,
     classType: student.classType ?? "",
+    examDate: student.examDate ?? "",
     enrollmentDate: student.enrollmentDate ? student.enrollmentDate : null,
     note: student.note ?? "",
     tags: student.tags.map((tag) => ({ code: tag.code, name: tag.name })),
@@ -160,12 +171,18 @@ export function StudentProfilePage() {
   } | null>(null);
   const [mountOpen, setMountOpen] = useState(false);
   const [longTaskMountOpen, setLongTaskMountOpen] = useState(false);
+  const [statusLabelsOpen, setStatusLabelsOpen] = useState(false);
   const businessDate = useBusinessDate();
 
   const studentQuery = useQuery({
     queryKey: ["student", studentId],
     queryFn: () => getStudent(studentId as string),
     enabled: Boolean(studentId),
+    retry: false,
+  });
+  const statusLabelsQuery = useQuery({
+    queryKey: ["student-status-labels"],
+    queryFn: listStudentStatusLabels,
     retry: false,
   });
 
@@ -185,6 +202,10 @@ export function StudentProfilePage() {
         classType:
           values.classType && values.classType.length > 0
             ? values.classType
+            : null,
+        examDate:
+          values.examDate && values.examDate.length > 0
+            ? values.examDate
             : null,
         enrollmentDate:
           typeof values.enrollmentDate === "string" &&
@@ -267,6 +288,31 @@ export function StudentProfilePage() {
     },
   });
 
+  const statusLabelsMutation = useMutation({
+    mutationFn: async (
+      drafts: Array<{
+        id?: string;
+        label: string;
+        color: string | null;
+        sortOrder: number;
+      }>,
+    ) =>
+      Promise.all(
+        drafts.map((draft) =>
+          draft.id
+            ? updateStudentStatusLabel(draft.id, draft)
+            : createStudentStatusLabel(draft),
+        ),
+      ),
+    onSuccess: async () => {
+      setStatusLabelsOpen(false);
+      await queryClient.invalidateQueries({
+        queryKey: ["student-status-labels"],
+      });
+    },
+    onError: (error: Error) => void message.error(error.message),
+  });
+
   if (studentQuery.isPending) {
     return (
       <Card>
@@ -299,6 +345,10 @@ export function StudentProfilePage() {
   }
 
   const student = studentQuery.data;
+  const statusLabels = statusLabelsQuery.data ?? [];
+  const localizedStatusOptions = statusOptions.map((option) => ({
+    ...option,
+  }));
 
   return (
     <Spin spinning={updateMutation.isPending}>
@@ -314,12 +364,18 @@ export function StudentProfilePage() {
             学生资料
           </Typography.Title>
           <Tag color={statusColor[student.status]}>
-            {
-              statusOptions.find((option) => option.value === student.status)
-                ?.label
-            }
+            {localizedStatusOptions.find(
+              (option) => option.value === student.status,
+            )?.label ?? student.status}
           </Tag>
+          <Tag color={student.statusLabel?.color ?? undefined}>
+            {student.statusLabel?.label ?? "不紧急"}
+          </Tag>
+          <Button onClick={() => setStatusLabelsOpen(true)}>状态标签</Button>
           <Tag>{devicePolicyLabel[student.defaultDevicePolicy]}</Tag>
+          {student.status !== "ARCHIVED" ? (
+            <ArchiveStudentButton student={student} />
+          ) : null}
           <Popconfirm
             title="删除该学生？"
             description="将同时删除其常规周、排期、任务、轨道与生词记录，且不可恢复。"
@@ -338,6 +394,10 @@ export function StudentProfilePage() {
             </Button>
           </Popconfirm>
         </Space>
+
+        {student.status === "ARCHIVED" ? (
+          <ArchivedStudentBanner student={student} />
+        ) : null}
 
         {conflict ? (
           <Alert
@@ -392,10 +452,13 @@ export function StudentProfilePage() {
               <Input maxLength={100} />
             </Form.Item>
             <Form.Item name="status" label="状态">
-              <Select options={statusOptions} />
+              <Select options={localizedStatusOptions} />
             </Form.Item>
-            <Form.Item name="classType" label="班型/阶段">
+            <Form.Item name="classType" label="班级/班型">
               <Input maxLength={100} />
+            </Form.Item>
+            <Form.Item name="examDate" label="考试日期">
+              <Input type="date" />
             </Form.Item>
             <Form.Item name="enrollmentDate" label="报名时间">
               <Input type="date" />
@@ -488,6 +551,22 @@ export function StudentProfilePage() {
         studentId={student.id}
         open={mountOpen}
         onClose={() => setMountOpen(false)}
+      />
+      <StudentStatusLabelModal
+        open={statusLabelsOpen}
+        labels={statusLabels}
+        confirmLoading={statusLabelsMutation.isPending}
+        onCancel={() => setStatusLabelsOpen(false)}
+        onSubmit={(labels) => statusLabelsMutation.mutate(labels)}
+        onDelete={async (label: StudentStatusLabel) => {
+          await deleteStudentStatusLabel(label.id);
+          await queryClient.invalidateQueries({
+            queryKey: ["student-status-labels"],
+          });
+          await queryClient.invalidateQueries({
+            queryKey: ["student", studentId],
+          });
+        }}
       />
     </Spin>
   );

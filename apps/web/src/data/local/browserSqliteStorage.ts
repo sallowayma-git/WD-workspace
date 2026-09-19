@@ -3,6 +3,7 @@ import sqlWasmUrl from "sql.js/dist/sql-wasm.wasm?url";
 import migrationCoreSql from "../../../../desktop/src-tauri/migrations/0001_local_core.sql?raw";
 import migrationSequenceLongTaskSql from "../../../../desktop/src-tauri/migrations/0002_sequence_long_task.sql?raw";
 import migrationSequenceInvariantsSql from "../../../../desktop/src-tauri/migrations/0003_sequence_invariants.sql?raw";
+import migrationCustomerFeedbackRound1Sql from "../../../../desktop/src-tauri/migrations/0004_customer_feedback_round1.sql?raw";
 import type {
   LocalQueryResult,
   LocalSqlStatement,
@@ -32,6 +33,7 @@ async function createDatabase(): Promise<Database> {
   database.exec(migrationCoreSql);
   database.exec(migrationSequenceLongTaskSql);
   database.exec(migrationSequenceInvariantsSql);
+  database.exec(migrationCustomerFeedbackRound1Sql);
   return database;
 }
 

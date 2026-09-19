@@ -56,7 +56,7 @@ import {
   type Priority,
   type TaskLike,
 } from "../tasks/taskApi";
-import { parseSeriesTitle } from "../../domain/task/seriesTitle";
+import { parseSeriesTitleCandidates } from "../../domain/task/seriesTitle";
 import { InlineTaskComposer } from "../today/InlineTaskComposer";
 import { convertTaskToLongTask } from "../longtasks/longTaskApi";
 import {
@@ -371,8 +371,13 @@ export function StudentSchedulePage() {
   // 系列推进（用户反馈）：day1 打勾后点 → 箭头，下一个可学习日出现 day2；
   // 序号按同前缀最大值 +1 接续，当天已有 day1~day3 时逐行点箭头得到 day4~day6。
   const createNextSeriesMutation = useMutation({
-    mutationFn: (task: TaskLike) =>
-      createNextSeriesTask(task.id, { expectedVersion: task.version }),
+    mutationFn: (params: { task: TaskLike; numberIndex?: number }) => {
+      const input: { expectedVersion: number; numberIndex?: number } = {
+        expectedVersion: params.task.version,
+      };
+      if (params.numberIndex != null) input.numberIndex = params.numberIndex;
+      return createNextSeriesTask(params.task.id, input);
+    },
     onSuccess: async (created) => {
       void message.success(
         `已生成「${created.titleSnapshot}」，排在 ${created.scheduledDate ?? "下一个可学习日"}`,
@@ -394,8 +399,13 @@ export function StudentSchedulePage() {
   // 右键“设为长期任务”：普通任务原地升级为长期任务轨道的当前项，完成后续项
   // 由轨道按标题模板自动接排；历史任务不回填。
   const convertToLongTaskMutation = useMutation({
-    mutationFn: (task: TaskLike) =>
-      convertTaskToLongTask(task.id, { expectedVersion: task.version }),
+    mutationFn: (params: { task: TaskLike; numberIndex?: number }) => {
+      const input: { expectedVersion: number; numberIndex?: number } = {
+        expectedVersion: params.task.version,
+      };
+      if (params.numberIndex != null) input.numberIndex = params.numberIndex;
+      return convertTaskToLongTask(params.task.id, input);
+    },
     onSuccess: (result) => {
       void message.success(
         `已设为长期任务，当前第 ${result.ordinal} 项，完成后续项将自动接排`,
@@ -417,10 +427,15 @@ export function StudentSchedulePage() {
   // optimistic update only patches the cache for invalidation here — the
   // refresh brings authoritative values back from SQLite.
   const updateTaskMutation = useMutation({
-    mutationFn: (params: { task: TaskLike; priority?: Priority }) =>
+    mutationFn: (params: {
+      task: TaskLike;
+      priority?: Priority;
+      title?: string;
+    }) =>
       updateTask(params.task.id, {
         expectedVersion: params.task.version,
         priority: params.priority,
+        title: params.title,
       }),
     onError: (error) => {
       void message.error(
@@ -810,15 +825,18 @@ export function StudentSchedulePage() {
                     }}
                     onDelete={(task) => deleteTaskMutation.mutate(task)}
                     onDuplicate={(task) => duplicateTaskMutation.mutate(task)}
-                    onCreateNext={(task) =>
-                      createNextSeriesMutation.mutate(task)
+                    onCreateNext={(task, numberIndex) =>
+                      createNextSeriesMutation.mutate({ task, numberIndex })
                     }
-                    onConvertToLongTask={(task) =>
-                      convertToLongTaskMutation.mutate(task)
+                    onConvertToLongTask={(task, numberIndex) =>
+                      convertToLongTaskMutation.mutate({ task, numberIndex })
                     }
                     onViewDetail={(task) => setDetailTarget(task)}
                     onSetPriority={(task, next) =>
                       updateTaskMutation.mutate({ task, priority: next })
+                    }
+                    onRename={(task, title) =>
+                      updateTaskMutation.mutate({ task, title })
                     }
                     onRescheduleSuccess={handleRescheduleSuccess}
                     onAddTask={refreshTaskViews}
@@ -900,15 +918,21 @@ export function StudentSchedulePage() {
                         onDuplicate={(task) =>
                           duplicateTaskMutation.mutate(task)
                         }
-                        onCreateNext={(task) =>
-                          createNextSeriesMutation.mutate(task)
+                        onCreateNext={(task, numberIndex) =>
+                          createNextSeriesMutation.mutate({ task, numberIndex })
                         }
-                        onConvertToLongTask={(task) =>
-                          convertToLongTaskMutation.mutate(task)
+                        onConvertToLongTask={(task, numberIndex) =>
+                          convertToLongTaskMutation.mutate({
+                            task,
+                            numberIndex,
+                          })
                         }
                         onViewDetail={(task) => setDetailTarget(task)}
                         onSetPriority={(task, next) =>
                           updateTaskMutation.mutate({ task, priority: next })
+                        }
+                        onRename={(task, title) =>
+                          updateTaskMutation.mutate({ task, title })
                         }
                         onRescheduleSuccess={handleRescheduleSuccess}
                         onAddTask={refreshTaskViews}
@@ -994,15 +1018,21 @@ export function StudentSchedulePage() {
                         onDuplicate={(task) =>
                           duplicateTaskMutation.mutate(task)
                         }
-                        onCreateNext={(task) =>
-                          createNextSeriesMutation.mutate(task)
+                        onCreateNext={(task, numberIndex) =>
+                          createNextSeriesMutation.mutate({ task, numberIndex })
                         }
-                        onConvertToLongTask={(task) =>
-                          convertToLongTaskMutation.mutate(task)
+                        onConvertToLongTask={(task, numberIndex) =>
+                          convertToLongTaskMutation.mutate({
+                            task,
+                            numberIndex,
+                          })
                         }
                         onViewDetail={(task) => setDetailTarget(task)}
                         onSetPriority={(task, next) =>
                           updateTaskMutation.mutate({ task, priority: next })
+                        }
+                        onRename={(task, title) =>
+                          updateTaskMutation.mutate({ task, title })
                         }
                         onRescheduleSuccess={handleRescheduleSuccess}
                         onAddTask={refreshTaskViews}
@@ -1088,6 +1118,7 @@ function DayCard({
   onConvertToLongTask,
   onViewDetail,
   onSetPriority,
+  onRename,
   onRescheduleSuccess,
   onAddTask,
 }: {
@@ -1101,10 +1132,11 @@ function DayCard({
   onMoveNext: (task: ScheduleTask) => void;
   onDelete: (task: TaskLike) => void;
   onDuplicate: (task: TaskLike) => void;
-  onCreateNext: (task: TaskLike) => void;
-  onConvertToLongTask?: (task: TaskLike) => void;
+  onCreateNext: (task: TaskLike, numberIndex?: number) => void;
+  onConvertToLongTask?: (task: TaskLike, numberIndex?: number) => void;
   onViewDetail: (target: TaskDetailTarget) => void;
   onSetPriority: (task: TaskLike, next: Priority) => void;
+  onRename: (task: TaskLike, title: string) => void;
   onRescheduleSuccess: () => void;
   onAddTask: () => void | Promise<void>;
 }) {
@@ -1194,6 +1226,7 @@ function DayCard({
                 onConvertToLongTask={onConvertToLongTask}
                 onViewDetail={onViewDetail}
                 onSetPriority={onSetPriority}
+                onRename={onRename}
                 onRescheduleSuccess={onRescheduleSuccess}
               />
             );
@@ -1225,6 +1258,7 @@ function DayCell({
   onConvertToLongTask,
   onViewDetail,
   onSetPriority,
+  onRename,
   onRescheduleSuccess,
   onAddTask,
 }: {
@@ -1240,10 +1274,11 @@ function DayCell({
   onMoveNext: (task: ScheduleTask, dayDate: string) => void;
   onDelete: (task: TaskLike) => void;
   onDuplicate: (task: TaskLike) => void;
-  onCreateNext: (task: TaskLike) => void;
-  onConvertToLongTask?: (task: TaskLike) => void;
+  onCreateNext: (task: TaskLike, numberIndex?: number) => void;
+  onConvertToLongTask?: (task: TaskLike, numberIndex?: number) => void;
   onViewDetail: (target: TaskDetailTarget) => void;
   onSetPriority: (task: TaskLike, next: Priority) => void;
+  onRename: (task: TaskLike, title: string) => void;
   onRescheduleSuccess: () => void;
   onAddTask: () => void | Promise<void>;
 }) {
@@ -1373,6 +1408,7 @@ function DayCell({
               onConvertToLongTask={onConvertToLongTask}
               onViewDetail={onViewDetail}
               onSetPriority={onSetPriority}
+              onRename={onRename}
               onRescheduleSuccess={onRescheduleSuccess}
             />
           ))}
@@ -1445,6 +1481,7 @@ function DraggableTaskItem({
   onConvertToLongTask,
   onViewDetail,
   onSetPriority,
+  onRename,
   onRescheduleSuccess,
 }: {
   task: ScheduleTask;
@@ -1457,10 +1494,11 @@ function DraggableTaskItem({
   onMoveNext: (task: ScheduleTask) => void;
   onDelete: (task: TaskLike) => void;
   onDuplicate: (task: TaskLike) => void;
-  onCreateNext: (task: TaskLike) => void;
-  onConvertToLongTask?: (task: TaskLike) => void;
+  onCreateNext: (task: TaskLike, numberIndex?: number) => void;
+  onConvertToLongTask?: (task: TaskLike, numberIndex?: number) => void;
   onViewDetail: (target: TaskDetailTarget) => void;
   onSetPriority: (task: TaskLike, next: Priority) => void;
+  onRename: (task: TaskLike, title: string) => void;
   onRescheduleSuccess: () => void;
 }) {
   // ACC-055 / INT-CAL-007: a locked task must not be draggable at all, and a
@@ -1470,8 +1508,8 @@ function DraggableTaskItem({
   const immovable = task.locked || task.carriedOver === true;
   // 系列推进只作用于手工/导入的编号任务；TRACK 任务的“下一项”由轨道在完成
   // 时自动生成（completeTask 推进 current_ordinal），箭头再做一份会重复。
-  const seriesTask =
-    task.sourceType === "TRACK" ? null : parseSeriesTitle(task.title);
+  const seriesCandidates =
+    task.sourceType === "TRACK" ? [] : parseSeriesTitleCandidates(task.title);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: task.id,
     disabled: immovable,
@@ -1517,13 +1555,17 @@ function DraggableTaskItem({
         onDuplicate={(t) => onDuplicate(t)}
         // TRACK 任务完成时轨道会自动接排下一项，这里不再提供“继续这个系列”，
         // 避免同一序号出现两条平行任务。
-        onCreateNext={seriesTask ? (t) => onCreateNext(t) : undefined}
+        onCreateNext={
+          seriesCandidates.length > 0
+            ? (t, numberIndex) => onCreateNext(t, numberIndex)
+            : undefined
+        }
         onConvertToLongTask={
           onConvertToLongTask &&
           taskLike.sourceType === "AD_HOC" &&
           taskLike.status === "PENDING" &&
           !taskLike.locked
-            ? (t) => onConvertToLongTask(t)
+            ? (t, numberIndex) => onConvertToLongTask(t, numberIndex)
             : undefined
         }
         onViewDetail={() =>
@@ -1535,8 +1577,9 @@ function DraggableTaskItem({
           })
         }
         onSetPriority={(t, next) => onSetPriority(t, next)}
+        onRename={onRename}
         extra={
-          seriesTask ? (
+          seriesCandidates.length > 0 ? (
             // 系列任务（标题带尾号）的箭头不再“改期自己”，而是生成“序号+1、
             // 排到下一个可学习日”的新任务：day1 打勾后点 → 即得下一个学习日的
             // day2。这和长期任务轨道是同一条排期规则（手动版的自动接排），改期

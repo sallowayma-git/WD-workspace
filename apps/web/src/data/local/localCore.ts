@@ -323,6 +323,21 @@ export class LocalCore {
     ]);
   }
 
+  /** UI preferences are the only app settings exposed to feature code. */
+  async getAppSetting(key: string): Promise<string | null> {
+    if (!key.startsWith("ui.")) {
+      throw new Error("Only ui.* app settings are accessible");
+    }
+    return this.settingValue(key);
+  }
+
+  async putAppSetting(key: string, value: string): Promise<void> {
+    if (!key.startsWith("ui.")) {
+      throw new Error("Only ui.* app settings are writable");
+    }
+    return this.putSetting(key, value);
+  }
+
   async idempotentResult(
     key: string,
   ): Promise<{ found: false } | { found: true; value: unknown }> {

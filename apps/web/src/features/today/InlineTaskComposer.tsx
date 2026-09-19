@@ -1,7 +1,7 @@
 import { LoadingOutlined } from "@ant-design/icons";
 import { Alert, AutoComplete, Space } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FocusEvent } from "react";
 import { MountTrackModal } from "../planning/MountTrackModal";
 import { useSeriesSuggestion } from "../tasks/useSeriesSuggestion";
 import { listTemplates, type TaskTemplate } from "../templates/templateApi";
@@ -13,6 +13,10 @@ export interface InlineTaskComposerProps {
   studentName?: string;
   scheduledDate: string;
   onCreated?: () => void | Promise<void>;
+  /** Commit the current ad-hoc title when the workbench cell loses focus. */
+  commitOnBlur?: boolean;
+  /** Called when the editor loses focus without a title to create. */
+  onCancel?: () => void;
 }
 
 type ComposerOption = {
@@ -27,13 +31,18 @@ export function InlineTaskComposer({
   studentName,
   scheduledDate,
   onCreated,
+  onCancel,
+  commitOnBlur = false,
 }: InlineTaskComposerProps) {
   const queryClient = useQueryClient();
   const { offerSeriesSuggestion } = useSeriesSuggestion();
   const [value, setValue] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [mountTemplate, setMountTemplate] = useState<TaskTemplate | null>(null);
+  const mountTemplateRef = useRef<TaskTemplate | null>(null);
   const submissionRef = useRef(false);
+  const valueRef = useRef("");
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Debounced template search. Empty query returns nothing to avoid noise.
   const [searchQuery, setSearchQuery] = useState("");
@@ -41,6 +50,12 @@ export function InlineTaskComposer({
     const handle = setTimeout(() => setSearchQuery(value.trim()), 200);
     return () => clearTimeout(handle);
   }, [value]);
+  useEffect(
+    () => () => {
+      if (blurTimerRef.current) clearTimeout(blurTimerRef.current);
+    },
+    [],
+  );
 
   const templatesQuery = useQuery({
     queryKey: ["templates-for-composer", searchQuery],
@@ -57,6 +72,7 @@ export function InlineTaskComposer({
         title,
       }),
     onSuccess: async () => {
+      valueRef.current = "";
       setValue("");
       setErrorMessage(null);
       await queryClient.invalidateQueries({
@@ -106,8 +122,31 @@ export function InlineTaskComposer({
     createMutation.mutate(trimmed);
   };
 
+  const handleBlur = (event: FocusEvent<HTMLElement>) => {
+    if (!commitOnBlur || mountTemplateRef.current) return;
+    const titleAtBlur =
+      event.target instanceof HTMLInputElement
+        ? event.target.value
+        : valueRef.current;
+    if (blurTimerRef.current) clearTimeout(blurTimerRef.current);
+    // AutoComplete fires blur before a clicked option's onSelect. Delay the
+    // decision by one tick so an option selection can cancel it.
+    blurTimerRef.current = setTimeout(() => {
+      blurTimerRef.current = null;
+      if (mountTemplateRef.current) return;
+      const title = titleAtBlur.trim();
+      if (title) submitAdHoc(title);
+      else onCancel?.();
+    }, 0);
+  };
+
   return (
-    <Space orientation="vertical" style={{ width: "100%" }} size="small">
+    <Space
+      orientation="vertical"
+      style={{ width: "100%" }}
+      size="small"
+      onBlurCapture={handleBlur}
+    >
       <AutoComplete
         style={{ width: "100%" }}
         aria-label={studentName ? `为 ${studentName} 新增任务` : "新增任务"}
@@ -115,22 +154,29 @@ export function InlineTaskComposer({
         options={options}
         placeholder="任务标题或模板名称"
         defaultActiveFirstOption={false}
-        onChange={(next, option) => {
-          if (
-            submissionRef.current ||
-            (!Array.isArray(option) && option?.kind)
-          ) {
-            return;
-          }
+        onChange={(next) => {
+          if (submissionRef.current) return;
+          valueRef.current = next;
           setValue(next);
           if (errorMessage) {
             setErrorMessage(null);
           }
         }}
+        onSearch={(next) => {
+          if (submissionRef.current) return;
+          valueRef.current = next;
+          setValue(next);
+        }}
         onSelect={(selected, option) => {
+          if (blurTimerRef.current) {
+            clearTimeout(blurTimerRef.current);
+            blurTimerRef.current = null;
+          }
           if (submissionRef.current) return;
           if (option.kind === "template" && option.template) {
+            mountTemplateRef.current = option.template;
             setMountTemplate(option.template);
+            valueRef.current = "";
             setValue("");
           } else if (option.kind === "ad-hoc") {
             submitAdHoc(selected.slice("__adhoc__:".length));
@@ -141,6 +187,15 @@ export function InlineTaskComposer({
         disabled={saving}
         prefix={saving ? <LoadingOutlined /> : undefined}
         onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            if (blurTimerRef.current) {
+              clearTimeout(blurTimerRef.current);
+              blurTimerRef.current = null;
+            }
+            if (commitOnBlur) onCancel?.();
+            return;
+          }
           if (e.key === "Enter" && !e.nativeEvent.isComposing) {
             const activeId = (e.target as HTMLElement).getAttribute(
               "aria-activedescendant",
@@ -173,7 +228,10 @@ export function InlineTaskComposer({
           initialTemplateId={mountTemplate.id}
           anchorDate={scheduledDate}
           open
-          onClose={() => setMountTemplate(null)}
+          onClose={() => {
+            mountTemplateRef.current = null;
+            setMountTemplate(null);
+          }}
         />
       ) : null}
     </Space>

@@ -21,12 +21,14 @@ export async function triggerDayClose(
 ): Promise<unknown> {
   parseDate(businessDate);
   const candidates = await core.storage.select<DbRow>(
-    `SELECT id FROM task_instance
-     WHERE scheduled_date IS NOT NULL
-       AND scheduled_date <= $1
-       AND status = 'PENDING'
-       AND locked = 0
-     ORDER BY scheduled_date, COALESCE(sort_order, 2147483647), id`,
+    `SELECT t.id FROM task_instance t
+     JOIN student s ON s.id = t.student_id
+     WHERE s.status = 'ACTIVE'
+       AND t.scheduled_date IS NOT NULL
+       AND t.scheduled_date <= $1
+       AND t.status = 'PENDING'
+       AND t.locked = 0
+     ORDER BY t.scheduled_date, COALESCE(t.sort_order, 2147483647), t.id`,
     [businessDate],
   );
   let carried = 0;

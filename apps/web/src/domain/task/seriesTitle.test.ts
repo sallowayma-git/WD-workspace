@@ -6,6 +6,7 @@ import {
   formatSeriesTitle,
   isSameSeries,
   parseSeriesTitle,
+  parseSeriesTitleCandidates,
   renderSeriesTitlePattern,
   seriesNormalizedKey,
 } from "./seriesTitle";
@@ -38,14 +39,57 @@ describe("parseSeriesTitle", () => {
     });
   });
 
-  it("returns null when the title does not end with a number", () => {
+  it("returns null when the title has no number", () => {
     expect(parseSeriesTitle("背单词")).toBeNull();
-    expect(parseSeriesTitle("背50个单词")).toBeNull();
     expect(parseSeriesTitle("")).toBeNull();
   });
 
   it("keeps the digit string so leading zeros can be reproduced", () => {
     expect(parseSeriesTitle("Day010")?.digits).toBe("010");
+  });
+
+  it("returns all number fragments for an explicitly selectable multi-number title", () => {
+    expect(parseSeriesTitleCandidates("2025真题1+生词")).toEqual([
+      {
+        prefix: "",
+        number: 2025,
+        digits: "2025",
+        suffix: "真题1+生词",
+        numberIndex: 0,
+      },
+      {
+        prefix: "2025真题",
+        number: 1,
+        digits: "1",
+        suffix: "+生词",
+        numberIndex: 1,
+      },
+    ]);
+    expect(parseSeriesTitle("2025真题1+生词", 0)).toEqual({
+      prefix: "",
+      number: 2025,
+      digits: "2025",
+      suffix: "真题1+生词",
+    });
+    expect(parseSeriesTitle("2025真题1+生词", 1)?.prefix).toBe("2025真题");
+  });
+
+  it("parses a single middle number for explicit series actions", () => {
+    expect(parseSeriesTitleCandidates("阅读密卷1做题+精读")).toEqual([
+      {
+        prefix: "阅读密卷",
+        number: 1,
+        digits: "1",
+        suffix: "做题+精读",
+        numberIndex: 0,
+      },
+    ]);
+    expect(parseSeriesTitle("阅读密卷1做题+精读")).toMatchObject({
+      prefix: "阅读密卷",
+      number: 1,
+      suffix: "做题+精读",
+    });
+    expect(parseSeriesTitleCandidates("2025")).toEqual([]);
   });
 });
 

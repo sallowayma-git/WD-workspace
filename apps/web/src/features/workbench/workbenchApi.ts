@@ -46,6 +46,9 @@ const dayCellSchema = z.object({
   date: z.string(),
   available: z.boolean(),
   availableMinutes: z.number(),
+  availabilitySource: z
+    .enum(["DATE_OVERRIDE", "WEEKLY_PATTERN", "DEFAULT"])
+    .optional(),
   tasks: z.array(taskSummarySchema),
 });
 
@@ -58,6 +61,19 @@ const studentRowSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
   code: z.string(),
+  classType: z.string().nullable().optional(),
+  examDate: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  statusLabel: z
+    .object({
+      id: z.string().uuid(),
+      label: z.string(),
+      color: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
+  note: z.string().nullable().optional(),
+  version: z.number().optional(),
   devicePolicy: z.string(),
   tags: z.array(studentTagSchema),
   vocabularyCountThisWeek: z.number(),

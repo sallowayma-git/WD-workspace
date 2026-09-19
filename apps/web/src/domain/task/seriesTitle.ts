@@ -1,13 +1,13 @@
 /**
- * 任务标题尾部序号的解析与生成，支撑“一天一句长难句day1 → day2”这类
+ * 任务标题序号的解析与生成，支撑“一天一句长难句day1 → day2”这类
  * 系列任务的推进：完成一项后点“下一项”，新任务自动接续序号并排到下一天。
  *
- * 识别规则刻意保持宽松——只看标题末尾的连续数字，数字后允许一个“天”字：
+ * 识别规则刻意保持宽松——标题中的每个连续数字都可作为序号候选：
  *   "一天一句长难句1"    → prefix "一天一句长难句", number 1, suffix ""
  *   "一天一句长难句day1"  → prefix "一天一句长难句day", number 1, suffix ""
  *   "长难句 第3天"        → prefix "长难句 第", number 3, suffix "天"
  *   "真题2024"           → prefix "真题", number 2024, suffix ""
- * 不以数字结尾的标题（"背单词"）解析为 null，调用方退化为普通复制。
+ * 没有数字的标题（"背单词"）解析为 null，调用方退化为普通复制。
  */
 export interface SeriesTitle {
   prefix: string;
@@ -17,16 +17,61 @@ export interface SeriesTitle {
   suffix: string;
 }
 
-const SERIES_TITLE_PATTERN = /^(.*?)(\d+)(天)?\s*$/;
+/** A numeric fragment in a title, including its position among all fragments. */
+export interface SeriesNumberCandidate extends SeriesTitle {
+  /** Zero-based index passed to the data layer when this fragment is selected. */
+  numberIndex: number;
+}
 
-export function parseSeriesTitle(title: string): SeriesTitle | null {
-  const match = SERIES_TITLE_PATTERN.exec(title.trim());
-  if (!match) return null;
+/**
+ * Return the usable number fragments in a title.
+ *
+ * Every numeric fragment is exposed.  Whether a fragment looks like a useful
+ * *series* counter (rather than a quantity or year) is a suggestion-layer
+ * concern; explicit “继续这个系列” actions must remain available.
+ */
+export function parseSeriesTitleCandidates(
+  title: string,
+): SeriesNumberCandidate[] {
+  const trimmed = title.trim();
+  if (!trimmed) return [];
+  const matches = [...trimmed.matchAll(/\d+/g)];
+  if (matches.length === 0) return [];
+  const hasStaticText = /\D/.test(trimmed);
+  if (!hasStaticText) return [];
+  return matches.map((match, numberIndex) => {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const suffix = trimmed.slice(end).replace(/\s+$/, "");
+    return {
+      prefix: trimmed.slice(0, start),
+      number: Number(match[0]),
+      digits: match[0],
+      suffix,
+      numberIndex,
+    };
+  });
+}
+
+/** Alias used by UI callers that need to render the selectable fragments. */
+export const getSeriesNumberCandidates = parseSeriesTitleCandidates;
+
+export function parseSeriesTitle(
+  title: string,
+  numberIndex?: number,
+): SeriesTitle | null {
+  const candidates = parseSeriesTitleCandidates(title);
+  if (candidates.length === 0) return null;
+  const selected =
+    numberIndex == null
+      ? candidates[candidates.length - 1]
+      : candidates[numberIndex];
+  if (!selected) return null;
   return {
-    prefix: match[1],
-    number: Number(match[2]),
-    digits: match[2],
-    suffix: match[3] ?? "",
+    prefix: selected.prefix,
+    number: selected.number,
+    digits: selected.digits,
+    suffix: selected.suffix,
   };
 }
 

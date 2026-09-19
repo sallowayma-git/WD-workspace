@@ -15,9 +15,18 @@ import {
 } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ApiError } from "../../lib/api/ApiError";
-import { createStudent, listStudents, type Student } from "./studentApi";
+import {
+  createStudent,
+  createStudentStatusLabel,
+  deleteStudentStatusLabel,
+  listStudents,
+  listStudentStatusLabels,
+  updateStudentStatusLabel,
+  type StudentStatusLabel,
+} from "./studentApi";
+import { StudentStatusLabelModal } from "./StudentStatusLabelModal";
 import "./StudentListPage.css";
 
 type StudentForm = {
@@ -27,21 +36,27 @@ type StudentForm = {
   defaultDevicePolicy: "ALLOWED" | "NOT_ALLOWED" | "CONFIRM";
 };
 
-const statusLabels: Record<Student["status"], string> = {
-  ACTIVE: "正常",
-  PAUSED: "暂停",
-  ARCHIVED: "已归档",
-};
-
 export function StudentListPage() {
-  const [search, setSearch] = useState("");
-  const [searchInput, setSearchInput] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [search, setSearch] = useState(searchParams.get("search") ?? "");
+  const [searchInput, setSearchInput] = useState(
+    searchParams.get("search") ?? "",
+  );
+  const [statusFilter, setStatusFilter] = useState<
+    "CURRENT" | "ARCHIVED" | "ALL"
+  >(searchParams.get("status") === "ARCHIVED" ? "ARCHIVED" : "CURRENT");
   const [createOpen, setCreateOpen] = useState(false);
+  const [statusLabelsOpen, setStatusLabelsOpen] = useState(false);
   const [form] = Form.useForm<StudentForm>();
   const queryClient = useQueryClient();
   const studentsQuery = useQuery({
     queryKey: ["students", search],
     queryFn: () => listStudents(search),
+    retry: false,
+  });
+  const statusLabelsQuery = useQuery({
+    queryKey: ["student-status-labels"],
+    queryFn: listStudentStatusLabels,
     retry: false,
   });
   const createMutation = useMutation({
@@ -50,6 +65,30 @@ export function StudentListPage() {
       setCreateOpen(false);
       form.resetFields();
       await queryClient.invalidateQueries({ queryKey: ["students"] });
+    },
+  });
+  const statusLabelsMutation = useMutation({
+    mutationFn: async (
+      drafts: Array<{
+        id?: string;
+        label: string;
+        color: string | null;
+        sortOrder: number;
+      }>,
+    ) => {
+      return Promise.all(
+        drafts.map((draft) =>
+          draft.id
+            ? updateStudentStatusLabel(draft.id, draft)
+            : createStudentStatusLabel(draft),
+        ),
+      );
+    },
+    onSuccess: async () => {
+      setStatusLabelsOpen(false);
+      await queryClient.invalidateQueries({
+        queryKey: ["student-status-labels"],
+      });
     },
   });
 
@@ -84,36 +123,73 @@ export function StudentListPage() {
   }
 
   const data = studentsQuery.data;
+  const visibleStudents = data.items.filter((student) =>
+    statusFilter === "ALL"
+      ? true
+      : statusFilter === "ARCHIVED"
+        ? student.status === "ARCHIVED"
+        : student.status !== "ARCHIVED",
+  );
+  const statusLabels = statusLabelsQuery.data ?? [];
+  const defaultLabel =
+    statusLabels.find((label) => label.label === "不紧急") ?? statusLabels[0];
   return (
     <Card
       title="学生工作台"
       extra={
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={() => setCreateOpen(true)}
-        >
-          新增学生
-        </Button>
+        <Space>
+          <Button onClick={() => setStatusLabelsOpen(true)}>状态标签</Button>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setCreateOpen(true)}
+          >
+            新增学生
+          </Button>
+        </Space>
       }
     >
       <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
-        <Space.Compact style={{ width: "min(100%, 420px)" }}>
+        <Space.Compact style={{ width: "min(100%, 560px)" }}>
           <Input
             aria-label="搜索学生"
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
-            onPressEnter={() => setSearch(searchInput)}
+            onPressEnter={() => {
+              setSearch(searchInput);
+              setSearchParams({ search: searchInput, status: statusFilter });
+            }}
             placeholder="姓名、别名或学生编号"
             prefix={<SearchOutlined />}
           />
-          <Button onClick={() => setSearch(searchInput)}>搜索</Button>
+          <Button
+            onClick={() => {
+              setSearch(searchInput);
+              setSearchParams({ search: searchInput, status: statusFilter });
+            }}
+          >
+            搜索
+          </Button>
+          <Select
+            aria-label="学生状态筛选"
+            value={statusFilter}
+            style={{ width: 120 }}
+            options={[
+              { value: "CURRENT", label: "未归档" },
+              { value: "ARCHIVED", label: "已归档" },
+              { value: "ALL", label: "全部" },
+            ]}
+            onChange={(value) => {
+              setStatusFilter(value);
+              setSearchParams({ search, status: value });
+            }}
+          />
         </Space.Compact>
-        {data.items.length === 0 ? (
+        {visibleStudents.length === 0 ? (
           <Empty description="没有匹配的学生" />
         ) : (
           <div className="student-card-grid">
-            {data.items.map((student) => (
+            {visibleStudents.map((student) => (
               <Card key={student.id} size="small" hoverable>
                 <Space direction="vertical" size={4} style={{ width: "100%" }}>
                   <Space
@@ -126,11 +202,12 @@ export function StudentListPage() {
                     >
                       {student.name}
                     </Link>
-                    <Tag
-                      color={student.status === "ACTIVE" ? "green" : "default"}
-                    >
-                      {statusLabels[student.status]}
+                    <Tag color={student.statusLabel?.color ?? undefined}>
+                      {student.statusLabel?.label ??
+                        defaultLabel?.label ??
+                        "不紧急"}
                     </Tag>
+                    {student.status === "ARCHIVED" ? <Tag>已归档</Tag> : null}
                   </Space>
                   <Space size={8} wrap>
                     <Typography.Text type="secondary">
@@ -207,7 +284,7 @@ export function StudentListPage() {
           >
             <Input maxLength={100} />
           </Form.Item>
-          <Form.Item name="classType" label="班型">
+          <Form.Item name="classType" label="班级/班型">
             <Input maxLength={100} />
           </Form.Item>
           <Form.Item
@@ -225,6 +302,20 @@ export function StudentListPage() {
           </Form.Item>
         </Form>
       </Modal>
+      <StudentStatusLabelModal
+        open={statusLabelsOpen}
+        labels={statusLabels}
+        confirmLoading={statusLabelsMutation.isPending}
+        onCancel={() => setStatusLabelsOpen(false)}
+        onSubmit={(labels) => statusLabelsMutation.mutate(labels)}
+        onDelete={async (label: StudentStatusLabel) => {
+          await deleteStudentStatusLabel(label.id);
+          await queryClient.invalidateQueries({
+            queryKey: ["student-status-labels"],
+          });
+          await queryClient.invalidateQueries({ queryKey: ["students"] });
+        }}
+      />
     </Card>
   );
 }

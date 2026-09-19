@@ -66,6 +66,22 @@ describe("detectSeriesSuggestions", () => {
     expect(detectSeriesSuggestions(series("", [1, 2, 3, 4]))).toEqual([]);
   });
 
+  it("does not mistake repeated year-only titles for a series", () => {
+    expect(
+      detectSeriesSuggestions(
+        [2020, 2021, 2022, 2023].map((year) => row(String(year))),
+      ),
+    ).toEqual([]);
+  });
+
+  it("does not mistake repeated quantities for a series", () => {
+    expect(
+      detectSeriesSuggestions(
+        [10, 20, 30, 40].map((count) => row(`背${count}个单词`)),
+      ),
+    ).toEqual([]);
+  });
+
   it("skips rows the assistant did not hand-assign or already cancelled", () => {
     const tracked = series("密卷", [1, 2, 3, 4]).map((r) => ({
       ...r,

@@ -53,6 +53,12 @@ describe("itemOrdinalLabel", () => {
     );
   });
 
+  it("keeps the tag when the matching number is in the middle of the title", () => {
+    expect(
+      itemOrdinalLabel(task({ title: "密卷08 阅读理解", itemOrdinal: 8 })),
+    ).toBe("第8项");
+  });
+
   it("renders nothing for ad-hoc tasks without an ordinal", () => {
     expect(itemOrdinalLabel(task({ sourceType: "AD_HOC" }))).toBeNull();
     expect(itemOrdinalLabel(task({ itemOrdinal: null }))).toBeNull();

@@ -381,7 +381,14 @@ export async function convertTaskToLongTask(
       }
       // 原地升级：任务 id 不变，只换 source_type 并落到轨道当前序号上；标题
       // 快照保持原样（AC-LT-008/012），历史任务（Day1～3）不回填（AC-LT-009）。
-      const shape = sequencePatternFromTitle(text(task, "title_snapshot"));
+      const numberIndex =
+        record(input, "numberIndex") != null
+          ? requiredNumber(input, "numberIndex")
+          : undefined;
+      const shape = sequencePatternFromTitle(
+        text(task, "title_snapshot"),
+        numberIndex,
+      );
       const inputStart =
         record(input, "startOrdinal") != null
           ? requiredNumber(input, "startOrdinal")
@@ -669,28 +676,33 @@ async function getLongTaskRow(
  * 任意任务标题 → 长期任务模板形状。尾部数字（含"第N天"）优先：数字既是
  * 模板起点也是当前序号；无数字的标题按"标题 + 空格 + {n}"成模板，从 1 起。
  */
-function sequencePatternFromTitle(title: string): {
+function sequencePatternFromTitle(
+  title: string,
+  numberIndex?: number,
+): {
   pattern: string;
   name: string;
   normalizedKey: string;
   detectedOrdinal: number | null;
 } {
-  const parsed = parseSeriesTitle(title);
+  const parsed = parseSeriesTitle(title, numberIndex);
   if (parsed) {
+    const pattern = buildSeriesTitlePattern({
+      prefix: parsed.prefix,
+      suffix: parsed.suffix,
+    });
     return {
-      pattern: buildSeriesTitlePattern({
-        prefix: parsed.prefix,
-        suffix: parsed.suffix,
-      }),
+      pattern,
       name: seriesDisplayName(parsed.prefix) || title.trim(),
-      normalizedKey: seriesNormalizedKey(parsed.prefix),
+      normalizedKey: seriesNormalizedKey(pattern),
       detectedOrdinal: parsed.number,
     };
   }
+  const pattern = buildPlainTitlePattern(title);
   return {
-    pattern: buildPlainTitlePattern(title),
+    pattern,
     name: title.trim(),
-    normalizedKey: seriesNormalizedKey(title),
+    normalizedKey: seriesNormalizedKey(pattern),
     detectedOrdinal: null,
   };
 }

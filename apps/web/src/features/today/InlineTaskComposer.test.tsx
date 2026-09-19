@@ -79,7 +79,11 @@ describe("InlineTaskComposer", () => {
     });
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <InlineTaskComposer studentId="student-1" scheduledDate="2026-09-10" />
+        <InlineTaskComposer
+          studentId="student-1"
+          scheduledDate="2026-09-10"
+          commitOnBlur
+        />
       </QueryClientProvider>,
     );
     await user.type(screen.getByRole("combobox"), "阅读");
@@ -97,5 +101,48 @@ describe("InlineTaskComposer", () => {
       anchorDate: "2026-09-10",
       open: true,
     });
+  });
+
+  it("submits a non-empty title on blur", async () => {
+    vi.mocked(createAdHocTask).mockResolvedValueOnce(
+      {} as Awaited<ReturnType<typeof createAdHocTask>>,
+    );
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <InlineTaskComposer
+          studentId="student-1"
+          scheduledDate="2026-09-10"
+          commitOnBlur
+        />
+      </QueryClientProvider>,
+    );
+    const input = screen.getByRole("combobox");
+    fireEvent.change(input, { target: { value: "阅读练习" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(createAdHocTask).toHaveBeenCalledWith({
+        studentId: "student-1",
+        scheduledDate: "2026-09-10",
+        title: "阅读练习",
+      }),
+    );
+  });
+
+  it("collapses on empty blur", async () => {
+    const onCancel = vi.fn();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <InlineTaskComposer
+          studentId="student-1"
+          scheduledDate="2026-09-10"
+          commitOnBlur
+          onCancel={onCancel}
+        />
+      </QueryClientProvider>,
+    );
+    screen.getByRole("combobox").focus();
+    fireEvent.blur(screen.getByRole("combobox"));
+    await waitFor(() => expect(onCancel).toHaveBeenCalledOnce());
+    expect(createAdHocTask).not.toHaveBeenCalled();
   });
 });

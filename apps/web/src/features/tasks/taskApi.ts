@@ -106,13 +106,15 @@ export function duplicateTask(
 
 export function createNextSeriesTask(
   taskId: string,
-  input: { expectedVersion?: number },
+  input: { expectedVersion?: number; numberIndex?: number } = {},
 ): Promise<Task> {
+  const command: Record<string, unknown> = {
+    taskId,
+    expectedVersion: input.expectedVersion ?? null,
+  };
+  if (input.numberIndex != null) command.numberIndex = input.numberIndex;
   return getDataAdapter()
-    .createNextSeriesTask(taskId, {
-      taskId,
-      expectedVersion: input.expectedVersion ?? null,
-    })
+    .createNextSeriesTask(taskId, command)
     .then((value) => taskSchema.parse(value));
 }
 

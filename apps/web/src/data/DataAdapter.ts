@@ -4,15 +4,37 @@ export interface DataAdapter {
   triggerDayClose(businessDate: string): Promise<unknown>;
   reconcileStartup(businessDate: string): Promise<unknown>;
   getWorkbench(from?: string, to?: string): Promise<unknown>;
+  getAppSetting(key: string): Promise<unknown>;
+  putAppSetting(key: string, value: string): Promise<unknown>;
   getSchedule(
     studentId: string,
     params?: { from?: string; to?: string; view?: string },
   ): Promise<unknown>;
 
   listStudents(query?: string): Promise<unknown>;
+  listStudentStatusLabels(): Promise<unknown>;
+  createStudentStatusLabel(input: Record<string, unknown>): Promise<unknown>;
+  updateStudentStatusLabel(
+    labelId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown>;
+  deleteStudentStatusLabel(labelId: string): Promise<void>;
   getStudent(studentId: string): Promise<unknown>;
   createStudent(input: Record<string, unknown>): Promise<unknown>;
   updateStudent(
+    studentId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown>;
+  updateStudentCard(
+    studentId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown>;
+  getArchiveImpact(studentId: string): Promise<unknown>;
+  archiveStudent(
+    studentId: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown>;
+  restoreStudent(
     studentId: string,
     input: Record<string, unknown>,
   ): Promise<unknown>;
@@ -28,6 +50,11 @@ export interface DataAdapter {
     studentId: string,
     weekStart: string,
     input: Record<string, unknown>,
+  ): Promise<unknown>;
+  setStudentRestDay(
+    studentId: string,
+    date: string,
+    rest: boolean,
   ): Promise<unknown>;
 
   listTemplates(query?: string): Promise<unknown>;
@@ -122,4 +149,6 @@ export interface DataAdapter {
     limit?: number,
     offset?: number,
   ): Promise<unknown>;
+  previewScheduleImport(rows: unknown): Promise<unknown>;
+  executeScheduleImport(plan: unknown): Promise<unknown>;
 }

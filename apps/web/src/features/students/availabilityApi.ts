@@ -98,3 +98,29 @@ export function saveWeekPlan(
     .saveWeekPlan(studentId, weekStart, input)
     .then((value) => weekPlanSchema.parse(value));
 }
+
+export type RestDayResult = {
+  moved: number;
+  targetDates: string[];
+  lockedSkipped: number;
+  blocked: number;
+};
+
+export function setStudentRestDay(
+  studentId: string,
+  date: string,
+  rest: boolean,
+): Promise<RestDayResult> {
+  return getDataAdapter()
+    .setStudentRestDay(studentId, date, rest)
+    .then((value) =>
+      z
+        .object({
+          moved: z.number(),
+          targetDates: z.array(z.string()),
+          lockedSkipped: z.number(),
+          blocked: z.number(),
+        })
+        .parse(value),
+    );
+}

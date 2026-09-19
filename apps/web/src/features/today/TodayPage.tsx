@@ -38,6 +38,7 @@ import {
 } from "../tasks/taskApi";
 import {
   formatSeriesTitle,
+  parseSeriesTitleCandidates,
   parseSeriesTitle,
 } from "../../domain/task/seriesTitle";
 import { useBusinessDate } from "../foundation/useBusinessDate";
@@ -321,8 +322,13 @@ export function TodayPage() {
   // 由本地适配器按同前缀最大值 +1 接续，当天已有 day1~day3 时逐行点箭头得到
   // day4~day6。返回新任务视图用于 toast 预览。
   const createNextSeriesMutation = useMutation({
-    mutationFn: (task: TaskLike) =>
-      createNextSeriesTask(task.id, { expectedVersion: task.version }),
+    mutationFn: (params: { task: TaskLike; numberIndex?: number }) => {
+      const input: { expectedVersion: number; numberIndex?: number } = {
+        expectedVersion: params.task.version,
+      };
+      if (params.numberIndex != null) input.numberIndex = params.numberIndex;
+      return createNextSeriesTask(params.task.id, input);
+    },
     onSuccess: async (created) => {
       void message.success(
         `已生成「${created.titleSnapshot}」，排在 ${created.scheduledDate ?? "下一个可学习日"}`,
@@ -344,8 +350,13 @@ export function TodayPage() {
   // 右键“设为长期任务”：普通任务原地升级为长期任务轨道的当前项（任务 id、
   // 标题快照都不变），之后完成即按标题模板自动生成下一项；历史任务不回填。
   const convertToLongTaskMutation = useMutation({
-    mutationFn: (task: TaskLike) =>
-      convertTaskToLongTask(task.id, { expectedVersion: task.version }),
+    mutationFn: (params: { task: TaskLike; numberIndex?: number }) => {
+      const input: { expectedVersion: number; numberIndex?: number } = {
+        expectedVersion: params.task.version,
+      };
+      if (params.numberIndex != null) input.numberIndex = params.numberIndex;
+      return convertTaskToLongTask(params.task.id, input);
+    },
     onSuccess: (result) => {
       void message.success(
         `已设为长期任务，当前第 ${result.ordinal} 项，完成后续项将自动接排`,
@@ -366,10 +377,15 @@ export function TodayPage() {
   // Priority toggle. Optimistic: flip the flag color in the cache so the icon
   // responds immediately; roll back on error.
   const updateTaskMutation = useMutation({
-    mutationFn: (params: { task: TaskLike; priority?: Priority }) =>
+    mutationFn: (params: {
+      task: TaskLike;
+      priority?: Priority;
+      title?: string;
+    }) =>
       updateTask(params.task.id, {
         expectedVersion: params.task.version,
         priority: params.priority,
+        title: params.title,
       }),
     onMutate: async (params) => {
       await queryClient.cancelQueries({
@@ -672,10 +688,14 @@ export function TodayPage() {
                         // 完成打勾后点一下即生成“序号+1、排到下一个可学习日”的
                         // 新任务，和长期任务轨道同一条排期规则。
                         // TRACK 任务的下一项由轨道完成时自动推进，不在此重复。
-                        const series =
+                        const seriesCandidates =
                           taskLike.sourceType === "TRACK"
-                            ? null
-                            : parseSeriesTitle(taskLike.title);
+                            ? []
+                            : parseSeriesTitleCandidates(taskLike.title);
+                        const series =
+                          seriesCandidates.length > 0
+                            ? parseSeriesTitle(taskLike.title)
+                            : null;
                         return (
                           <div
                             key={task.id}
@@ -709,8 +729,12 @@ export function TodayPage() {
                                 duplicateTaskMutation.mutate(t)
                               }
                               onCreateNext={
-                                series
-                                  ? (t) => createNextSeriesMutation.mutate(t)
+                                seriesCandidates.length > 0
+                                  ? (t, numberIndex) =>
+                                      createNextSeriesMutation.mutate({
+                                        task: t,
+                                        numberIndex,
+                                      })
                                   : undefined
                               }
                               extra={
@@ -723,7 +747,9 @@ export function TodayPage() {
                                     onClick={(e) => {
                                       e.preventDefault();
                                       e.stopPropagation();
-                                      createNextSeriesMutation.mutate(taskLike);
+                                      createNextSeriesMutation.mutate({
+                                        task: taskLike,
+                                      });
                                     }}
                                   >
                                     →
@@ -734,8 +760,15 @@ export function TodayPage() {
                                 taskLike.sourceType === "AD_HOC" &&
                                 taskLike.status === "PENDING" &&
                                 !taskLike.locked
-                                  ? (t) => convertToLongTaskMutation.mutate(t)
+                                  ? (t, numberIndex) =>
+                                      convertToLongTaskMutation.mutate({
+                                        task: t,
+                                        numberIndex,
+                                      })
                                   : undefined
+                              }
+                              onRename={(t, title) =>
+                                updateTaskMutation.mutate({ task: t, title })
                               }
                               onViewDetail={() =>
                                 setDetailTarget({

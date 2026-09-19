@@ -15,10 +15,12 @@ import {
   Typography,
 } from "antd";
 import type { MenuProps } from "antd";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { parseSeriesTitleCandidates } from "../../domain/task/seriesTitle";
 import { buildTaskMenuItems } from "./TaskContextMenu";
 import { itemOrdinalLabel } from "./itemOrdinalLabel";
 import { RescheduleModal } from "./RescheduleModal";
+import { SeriesNumberPicker } from "./SeriesNumberPicker";
 import type { Priority, TaskLike } from "./taskApi";
 
 export type TaskDensity = "compact" | "expanded";
@@ -38,11 +40,15 @@ export interface TaskCardProps {
   /** Called with an optional target date when the user duplicates. */
   onDuplicate: (task: TaskLike, targetDate?: string) => void;
   /** 系列推进：接着排下一项（右键菜单「继续这个系列」）。 */
-  onCreateNext?: (task: TaskLike) => void;
+  onCreateNext?: (task: TaskLike, numberIndex?: number) => void;
   /** 原地升级为长期任务（右键菜单项；仅待办普通任务由父级启用）。 */
-  onConvertToLongTask?: (task: TaskLike) => void;
+  onConvertToLongTask?: (task: TaskLike, numberIndex?: number) => void;
+  /** 标题双击改名；未提供时仍保持原来的只读标题行为。 */
+  onRename?: (task: TaskLike, title: string) => void;
   /** Called when the user clicks "查看详情". */
   onViewDetail: (task: TaskLike) => void;
+  /** Menu entries owned by the surrounding cell (copy/rest-day actions). */
+  cellMenuItems?: MenuProps["items"];
   /** Called with the next priority when the user cycles the flag. */
   onSetPriority?: (task: TaskLike, next: Priority) => void;
   density?: TaskDensity;
@@ -104,7 +110,9 @@ export function TaskCard({
   onDuplicate,
   onCreateNext,
   onConvertToLongTask,
+  onRename,
   onViewDetail,
+  cellMenuItems,
   onSetPriority,
   density = "compact",
   draggable = false,
@@ -132,7 +140,28 @@ export function TaskCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [renameDraft, setRenameDraft] = useState(task.title);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const skipRenameBlur = useRef(false);
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [seriesAction, setSeriesAction] = useState<"next" | "convert" | null>(
+    null,
+  );
   const ordinalLabel = itemOrdinalLabel(task);
+  const seriesCandidates = parseSeriesTitleCandidates(task.title);
+
+  function runSeriesAction(
+    action: "next" | "convert",
+    numberIndex?: number,
+  ): void {
+    const callback = action === "next" ? onCreateNext : onConvertToLongTask;
+    if (!callback) return;
+    if (numberIndex == null && seriesCandidates.length > 1) {
+      setSeriesAction(action);
+      return;
+    }
+    callback(task, seriesCandidates.length > 1 ? numberIndex : undefined);
+  }
 
   const menuItems: MenuProps["items"] = buildTaskMenuItems({
     // History rows are treated like locked rows in the menu: no reschedule,
@@ -146,13 +175,27 @@ export function TaskCard({
     onReschedule: () => setRescheduleOpen(true),
     onCarryForward: onCarryForward ? () => onCarryForward(task) : undefined,
     onDuplicate: () => onDuplicate(task),
-    onCreateNext: onCreateNext ? () => onCreateNext(task) : undefined,
+    onCreateNext: onCreateNext ? () => runSeriesAction("next") : undefined,
     onConvertToLongTask: onConvertToLongTask
-      ? () => onConvertToLongTask(task)
+      ? () => runSeriesAction("convert")
       : undefined,
     onViewDetail: () => onViewDetail(task),
     onDelete: () => setDeleteOpen(true),
   });
+  const combinedMenuItems: MenuProps["items"] = [
+    ...(cellMenuItems ?? []),
+    ...(cellMenuItems && cellMenuItems.length > 0
+      ? [{ type: "divider" as const }]
+      : []),
+    ...(menuItems ?? []),
+  ];
+
+  useEffect(
+    () => () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    },
+    [],
+  );
 
   function handleFlagClick(e: React.MouseEvent): void {
     e.stopPropagation();
@@ -163,12 +206,16 @@ export function TaskCard({
   return (
     <>
       <Dropdown
-        menu={{ items: menuItems, onClick: () => setMenuOpen(false) }}
+        menu={{
+          items: combinedMenuItems,
+          onClick: () => setMenuOpen(false),
+        }}
         trigger={["contextMenu"]}
         open={menuOpen}
         onOpenChange={setMenuOpen}
       >
         <div
+          onContextMenu={(event) => event.stopPropagation()}
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
           style={{
@@ -206,30 +253,89 @@ export function TaskCard({
               />
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <button
-                type="button"
-                onClick={() => onViewDetail(task)}
-                aria-label={`查看任务 ${task.shortTitle ?? task.title}`}
-                title={task.shortTitle ?? task.title}
-                style={{
-                  border: 0,
-                  padding: 0,
-                  background: "transparent",
-                  color: "inherit",
-                  font: "inherit",
-                  fontWeight: completed ? 400 : 600,
-                  cursor: "pointer",
-                  textAlign: "left",
-                  width: "100%",
-                  textDecoration: completed ? "line-through" : undefined,
-                  display: "block",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {task.shortTitle ?? task.title}
-              </button>
+              {editingTitle && onRename ? (
+                <input
+                  autoFocus
+                  value={renameDraft}
+                  aria-label="编辑任务标题"
+                  onChange={(event) => setRenameDraft(event.target.value)}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onBlur={() => {
+                    if (skipRenameBlur.current) {
+                      skipRenameBlur.current = false;
+                      return;
+                    }
+                    const nextTitle = renameDraft.trim();
+                    setEditingTitle(false);
+                    if (nextTitle && nextTitle !== task.title) {
+                      onRename(task, nextTitle);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      skipRenameBlur.current = true;
+                      event.currentTarget.blur();
+                      setRenameDraft(task.title);
+                      setEditingTitle(false);
+                    } else if (event.key === "Enter") {
+                      event.currentTarget.blur();
+                    }
+                  }}
+                  onClick={(event) => event.stopPropagation()}
+                  style={{
+                    width: "100%",
+                    border: "1px solid #1677ff",
+                    borderRadius: 4,
+                    padding: "2px 4px",
+                    font: "inherit",
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (clickTimerRef.current) {
+                      clearTimeout(clickTimerRef.current);
+                    }
+                    clickTimerRef.current = setTimeout(() => {
+                      clickTimerRef.current = null;
+                      onViewDetail(task);
+                    }, 250);
+                  }}
+                  onDoubleClick={(event) => {
+                    if (!onRename || !actionable) return;
+                    if (clickTimerRef.current) {
+                      clearTimeout(clickTimerRef.current);
+                      clickTimerRef.current = null;
+                    }
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setRenameDraft(task.title);
+                    setEditingTitle(true);
+                  }}
+                  aria-label={`查看任务 ${task.shortTitle ?? task.title}`}
+                  title={task.shortTitle ?? task.title}
+                  style={{
+                    border: 0,
+                    padding: 0,
+                    background: "transparent",
+                    color: "inherit",
+                    font: "inherit",
+                    fontWeight: completed ? 400 : 600,
+                    cursor: "pointer",
+                    textAlign: "left",
+                    width: "100%",
+                    textDecoration: completed ? "line-through" : undefined,
+                    display: "block",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {task.shortTitle ?? task.title}
+                </button>
+              )}
               {density === "expanded" &&
               (ordinalLabel ||
                 task.durationMinutes != null ||
@@ -370,6 +476,21 @@ export function TaskCard({
           onSuccess={(targetDate) => {
             setRescheduleOpen(false);
             onReschedule(task, targetDate);
+          }}
+        />
+      ) : null}
+
+      {seriesAction ? (
+        <SeriesNumberPicker
+          open
+          title={task.title}
+          candidates={seriesCandidates}
+          onCancel={() => setSeriesAction(null)}
+          onConfirm={(numberIndex) => {
+            const action = seriesAction;
+            setSeriesAction(null);
+            if (action === "next") onCreateNext?.(task, numberIndex);
+            else onConvertToLongTask?.(task, numberIndex);
           }}
         />
       ) : null}

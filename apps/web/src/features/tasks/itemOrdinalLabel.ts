@@ -1,4 +1,3 @@
-import { parseSeriesTitle } from "../../domain/task/seriesTitle";
 import type { TaskLike } from "./taskApi";
 
 /**
@@ -13,7 +12,14 @@ import type { TaskLike } from "./taskApi";
 export function itemOrdinalLabel(task: TaskLike): string | null {
   const ordinal = task.itemOrdinal;
   if (ordinal == null) return null;
-  const titleOrdinal = parseSeriesTitle(task.shortTitle ?? task.title)?.number;
+  // Series parsing intentionally accepts every numeric fragment so explicit
+  // series actions can choose a counter in the middle of a title.  The compact
+  // ordinal label has a narrower job: suppress duplication only when the
+  // visible title itself *ends* in the same counter (optionally followed by
+  // “天”).  A title such as “密卷08 阅读理解” must still show “第8项”.
+  const visibleTitle = (task.shortTitle ?? task.title).trim();
+  const trailingOrdinal = visibleTitle.match(/(\d+)\s*(?:天)?\s*$/);
+  const titleOrdinal = trailingOrdinal ? Number(trailingOrdinal[1]) : null;
   return titleOrdinal === ordinal ? null : `第${ordinal}项`;
 }
 

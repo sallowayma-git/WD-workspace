@@ -1,7 +1,13 @@
 import { App as AntApp } from "antd";
 import type { DragEndEvent } from "@dnd-kit/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -109,11 +115,12 @@ describe("StudentWorkbenchPage matrix acceptance", () => {
       expect(getWorkbench).toHaveBeenLastCalledWith("2026-08-24", "2026-08-30"),
     );
     expect(await screen.findByLabelText("搜索学生")).toHaveValue("林");
+    expect(await screen.findByRole("link", { name: "林同学" })).toHaveAttribute(
+      "href",
+      `/students/${LIN}/profile`,
+    );
     expect(
-      await screen.findByRole("link", { name: "林同学 排期" }),
-    ).toHaveAttribute("href", `/students/${LIN}/schedule?date=2026-08-24`);
-    expect(
-      screen.queryByRole("link", { name: "王同学 排期" }),
+      screen.queryByRole("link", { name: "王同学" }),
     ).not.toBeInTheDocument();
   });
 
@@ -128,15 +135,16 @@ describe("StudentWorkbenchPage matrix acceptance", () => {
 
     // ACC-040: the vertical axis is students, the horizontal axis is dates.
     const headers = within(matrix).getAllByRole("columnheader");
-    expect(headers[0]).toHaveTextContent("学生");
-    expect(headers).toHaveLength(8); // student column + 7 dates
+    expect(headers[0]).toHaveTextContent("序号");
+    expect(headers[1]).toHaveTextContent("学生");
+    expect(headers).toHaveLength(9); // sequence + student + 7 dates
     const dates = weekDates();
     for (const date of dates) {
       const d = new Date(date);
       expect(matrix).toHaveTextContent(`${d.getMonth() + 1}/${d.getDate()}`);
     }
-    expect(within(matrix).getByText("林同学")).toBeVisible();
-    expect(within(matrix).getByText("王同学")).toBeVisible();
+    expect(await within(matrix).findByText("林同学")).toBeVisible();
+    expect(await within(matrix).findByText("王同学")).toBeVisible();
   });
 
   it("pins the student column and keeps the date columns horizontally scrollable", async () => {
@@ -149,19 +157,19 @@ describe("StudentWorkbenchPage matrix acceptance", () => {
     const matrix = await screen.findByTestId("student-task-matrix");
 
     // ACC-041: the rendered first body column is sticky at the left edge.
-    const studentCell = within(matrix)
-      .getByText("林同学")
-      .closest(".ant-table-cell-fix-left");
+    const studentCell = (await within(matrix).findByText("林同学")).closest(
+      ".ant-table-cell-fix-left",
+    );
     expect(studentCell).not.toBeNull();
-    expect(studentCell).toHaveStyle({ position: "sticky", left: "0px" });
+    expect(studentCell).toHaveStyle({ position: "sticky", left: "48px" });
 
-    // ACC-042: the body is wider than the viewport (180 + 7 * 160 = 1300),
+    // ACC-042: the body is wider than the viewport (48 + 180 + 7 * 160 = 1348),
     // so the matrix scrolls sideways rather than compressing the columns.
     const spacer = within(matrix).getByTestId("student-task-matrix-spacer");
-    expect(spacer).toHaveStyle({ minWidth: "1300px" });
+    expect(spacer).toHaveStyle({ minWidth: "1348px" });
   });
 
-  it("holds several task cards in one cell and reveals the rest in expanded density", async () => {
+  it("renders every task in a cell in both density modes", async () => {
     setDataAdapterForTests({
       getWorkbench: () => Promise.resolve(workbenchPayload()),
     } as unknown as DataAdapter);
@@ -174,18 +182,34 @@ describe("StudentWorkbenchPage matrix acceptance", () => {
     expect(await within(matrix).findByText("密卷08")).toBeVisible();
     expect(within(matrix).getByText("听写A")).toBeVisible();
 
-    // ACC-043 (compact): compact density shows 2 cards and counts the rest.
-    expect(within(matrix).queryByText("错题复盘")).not.toBeInTheDocument();
-    expect(within(matrix).getByText("+1")).toBeVisible();
+    // ACC-043: compact mode no longer truncates the list or renders "+N".
+    expect(within(matrix).getByText("错题复盘")).toBeVisible();
+    expect(within(matrix).queryByText("+1")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByText("扩展"));
 
-    // ACC-043 (expanded): the same cell now shows all three cards and the
-    // overflow counter disappears.
-    await waitFor(() =>
-      expect(screen.getByText("错题复盘")).toBeInTheDocument(),
-    );
+    // Expanded mode continues to show all task cards.
+    await waitFor(() => expect(screen.getByText("错题复盘")).toBeVisible());
     expect(screen.queryByText("+1")).not.toBeInTheDocument();
+  });
+
+  it("keeps the add entry on occupied cells and shows cell actions on context menu", async () => {
+    setDataAdapterForTests({
+      getWorkbench: () => Promise.resolve(workbenchPayload()),
+    } as unknown as DataAdapter);
+    renderPage();
+    const matrix = await screen.findByTestId("student-task-matrix");
+    const date = weekDates()[0];
+    expect(
+      await within(matrix).findByLabelText(`为 林同学 在 ${date} 添加任务`),
+    ).toBeVisible();
+    const cell = matrix.querySelector(
+      `[data-droppable-student-id="${LIN}"][data-droppable-date="${date}"]`,
+    );
+    expect(cell).not.toBeNull();
+    fireEvent.contextMenu(cell as HTMLElement);
+    expect(await screen.findByText("复制当天作业")).toBeInTheDocument();
+    expect(screen.getByText("标记为休息日")).toBeInTheDocument();
   });
 
   it("keeps a task checkbox clickable inside the draggable matrix card", async () => {

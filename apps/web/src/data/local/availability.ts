@@ -1,6 +1,11 @@
 //! 可学习时间：每周模板与单周覆盖，两者一起决定某天能不能排任务。
 
 import { ApiError } from "../../lib/api/ApiError";
+import {
+  findNextAvailableStudyDate,
+  resolveStudyAvailability,
+  type StudyDateOverride,
+} from "../../domain/scheduling/availability";
 import type { LocalSqlStatement } from "./LocalStorage";
 import type { LocalCore } from "./localCore";
 import {
@@ -14,7 +19,14 @@ import {
   text,
   type DbRow,
 } from "./rows";
-import { datesBetween, now, shiftDate } from "./dates";
+import { localError } from "./rows";
+import {
+  datesBetween,
+  now,
+  parseDate,
+  shiftDate,
+  STUDY_DATE_HORIZON_DAYS,
+} from "./dates";
 
 export async function getWeeklyPattern(
   core: LocalCore,
@@ -186,11 +198,12 @@ export async function saveWeekPlan(
     );
   }
   const timestamp = now();
+  const weekEnd = shiftDate(weekStart, 6);
   const statements: LocalSqlStatement[] = [
     {
       sql: `DELETE FROM student_date_override
             WHERE student_id = $1 AND business_date BETWEEN $2 AND $3`,
-      values: [studentId, weekStart, shiftDate(weekStart, 6)],
+      values: [studentId, weekStart, weekEnd],
     },
   ];
   for (const value of days) {
@@ -214,8 +227,245 @@ export async function saveWeekPlan(
       expectedRowsAffected: 1,
     });
   }
+
+  // Turning a populated day into a rest day must not strand ordinary pending
+  // work in a cell the student can no longer study on. Build the effective
+  // calendar with this draft week replacing persisted overrides, then move
+  // each unlocked pending task to its next viable study day. Locked tasks are
+  // intentionally left in place. If no date exists in the shared 90-day
+  // horizon, keep the date for visibility and mark the task BLOCKED.
+  const proposedOverrides: StudyDateOverride[] = days.map((value) => {
+    const day = value as Record<string, unknown>;
+    return {
+      date: requiredString(day, "businessDate"),
+      available: Boolean(record(day, "available")),
+      availableMinutes: requiredNumber(day, "availableMinutes"),
+      devicePolicy:
+        (nullableInputString(day, "devicePolicyOverride") as
+          "ALLOWED" | "NOT_ALLOWED" | "CONFIRM" | null) ?? null,
+    };
+  });
+  const restDates = proposedOverrides
+    .filter((day) => !day.available)
+    .map((day) => day.date);
+  if (restDates.length > 0) {
+    const calendar = await core.studentCalendar(
+      studentId,
+      weekStart,
+      shiftDate(weekEnd, STUDY_DATE_HORIZON_DAYS),
+    );
+    calendar.overrides = [
+      ...(calendar.overrides ?? []).filter(
+        (override) => override.date < weekStart || override.date > weekEnd,
+      ),
+      ...proposedOverrides,
+    ];
+    const affected = await core.storage.select<DbRow>(
+      `SELECT id, scheduled_date, requires_device_snapshot, version
+       FROM task_instance
+       WHERE student_id = $1 AND scheduled_date BETWEEN $2 AND $3
+         AND status = 'PENDING' AND locked = 0`,
+      [studentId, weekStart, weekEnd],
+    );
+    const restSet = new Set(restDates);
+    for (const task of affected) {
+      const scheduledDate = text(task, "scheduled_date");
+      if (!restSet.has(scheduledDate)) continue;
+      const targetDate = findNextAvailableStudyDate({
+        calendar,
+        afterDate: scheduledDate,
+        requiresDevice:
+          task.requires_device_snapshot == null
+            ? undefined
+            : bool(task, "requires_device_snapshot"),
+        horizonDays: STUDY_DATE_HORIZON_DAYS,
+      });
+      statements.push(
+        targetDate
+          ? {
+              sql: `UPDATE task_instance SET scheduled_date = $1,
+                    original_scheduled_date = COALESCE(original_scheduled_date, $2),
+                    schedule_origin = 'MANUAL', manual_override = 1,
+                    override_reason = 'REST_DAY_MOVE', version = version + 1,
+                    updated_at = $3
+                    WHERE id = $4 AND version = $5 AND status = 'PENDING'
+                      AND locked = 0`,
+              values: [
+                targetDate,
+                scheduledDate,
+                timestamp,
+                text(task, "id"),
+                numberValue(task, "version"),
+              ],
+              expectedRowsAffected: 1,
+            }
+          : {
+              sql: `UPDATE task_instance SET status = 'BLOCKED',
+                    override_reason = 'REST_DAY_NO_AVAILABLE_DATE',
+                    version = version + 1, updated_at = $1
+                    WHERE id = $2 AND version = $3 AND status = 'PENDING'
+                      AND locked = 0`,
+              values: [
+                timestamp,
+                text(task, "id"),
+                numberValue(task, "version"),
+              ],
+              expectedRowsAffected: 1,
+            },
+      );
+    }
+  }
   await core.storage.transaction(statements);
   return getWeekPlan(core, studentId, weekStart);
+}
+
+/**
+ * Mark one student's date as a rest day and move its open work in the same
+ * transaction. This deliberately updates the task row in place: a rest day
+ * is a manual schedule correction, not a carry-forward history event.
+ */
+export async function setStudentRestDay(
+  core: LocalCore,
+  studentId: string,
+  date: string,
+  rest: boolean,
+): Promise<unknown> {
+  parseDate(date);
+  await core.studentRow(studentId);
+  const timestamp = now();
+  const horizonEnd = shiftDate(date, STUDY_DATE_HORIZON_DAYS);
+  const calendar = await core.studentCalendar(studentId, date, horizonEnd);
+  const existingOverrides = await core.storage.select<DbRow>(
+    `SELECT id, available, source_type FROM student_date_override
+     WHERE student_id = $1 AND business_date = $2`,
+    [studentId, date],
+  );
+  const existing = existingOverrides[0];
+  const statements: LocalSqlStatement[] = [];
+  let moved = 0;
+  let lockedSkipped = 0;
+  let blocked = 0;
+  const targetDates: string[] = [];
+
+  if (rest) {
+    statements.push({
+      sql: `INSERT INTO student_date_override(
+              id, student_id, business_date, available, available_minutes,
+              device_policy_override, source_type, note, version, created_at, updated_at
+            ) VALUES ($1, $2, $3, 0, 0, NULL, 'MANUAL', '休息', 0, $4, $4)
+            ON CONFLICT(student_id, business_date) DO UPDATE SET
+              available = 0, available_minutes = 0,
+              device_policy_override = NULL, source_type = 'MANUAL',
+              note = '休息', version = student_date_override.version + 1,
+              updated_at = excluded.updated_at`,
+      values: [
+        existing ? existing.id : crypto.randomUUID(),
+        studentId,
+        date,
+        timestamp,
+      ],
+      expectedRowsAffected: 1,
+    });
+    const effectiveCalendar = {
+      ...calendar,
+      overrides: [
+        ...(calendar.overrides ?? []).filter(
+          (override) => override.date !== date,
+        ),
+        { date, available: false, availableMinutes: 0, devicePolicy: null },
+      ],
+    };
+    const affected = await core.storage.select<DbRow>(
+      `SELECT id, scheduled_date, requires_device_snapshot, locked, status, version
+       FROM task_instance
+       WHERE student_id = $1 AND scheduled_date = $2
+         AND status IN ('PENDING', 'BLOCKED')`,
+      [studentId, date],
+    );
+    for (const task of affected) {
+      if (bool(task, "locked")) {
+        lockedSkipped += 1;
+        continue;
+      }
+      const targetDate = findNextAvailableStudyDate({
+        calendar: effectiveCalendar,
+        afterDate: date,
+        requiresDevice:
+          task.requires_device_snapshot == null
+            ? undefined
+            : bool(task, "requires_device_snapshot"),
+        horizonDays: STUDY_DATE_HORIZON_DAYS,
+      });
+      if (!targetDate) {
+        blocked += 1;
+        // Keep the task exactly where it was. `blocked` is an operation
+        // summary count, not a request to mutate a pending task's lifecycle.
+        continue;
+      }
+      moved += 1;
+      targetDates.push(targetDate);
+      statements.push({
+        sql: `UPDATE task_instance SET scheduled_date = $1,
+              original_scheduled_date = COALESCE(original_scheduled_date, $2),
+              schedule_origin = 'MANUAL', manual_override = 1,
+              override_reason = 'REST_DAY_MOVE', status = 'PENDING',
+              version = version + 1, updated_at = $3
+              WHERE id = $4 AND version = $5
+                AND status IN ('PENDING', 'BLOCKED') AND locked = 0`,
+        values: [
+          targetDate,
+          date,
+          timestamp,
+          text(task, "id"),
+          numberValue(task, "version"),
+        ],
+        expectedRowsAffected: 1,
+      });
+    }
+  } else {
+    // Only remove the manual rest override. A weekly day that is still off
+    // receives an explicit available override so cancelling rest is visible
+    // in the same calendar without changing the weekly pattern.
+    if (
+      existing &&
+      bool(existing, "available") === false &&
+      nullableText(existing, "source_type") === "MANUAL"
+    ) {
+      statements.push({
+        sql: `DELETE FROM student_date_override
+              WHERE student_id = $1 AND business_date = $2
+                AND available = 0 AND source_type = 'MANUAL'`,
+        values: [studentId, date],
+      });
+      const withoutOverride = {
+        ...calendar,
+        overrides: (calendar.overrides ?? []).filter(
+          (override) => override.date !== date,
+        ),
+      };
+      if (!resolveStudyAvailability(withoutOverride, date).available) {
+        statements.push({
+          sql: `INSERT INTO student_date_override(
+                  id, student_id, business_date, available, available_minutes,
+                  device_policy_override, source_type, note, version, created_at, updated_at
+                ) VALUES ($1, $2, $3, 1, 0, NULL, 'MANUAL', NULL, 0, $4, $4)`,
+          values: [crypto.randomUUID(), studentId, date, timestamp],
+          expectedRowsAffected: 1,
+        });
+      }
+    }
+  }
+  try {
+    if (statements.length > 0) await core.storage.transaction(statements);
+  } catch (error) {
+    localError(error);
+  }
+  return {
+    moved,
+    targetDates: [...new Set(targetDates)].sort(),
+    lockedSkipped,
+    blocked,
+  };
 }
 
 function weekPlanView(studentId: string, weekStart: string, rows: DbRow[]) {

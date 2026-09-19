@@ -60,6 +60,19 @@ export async function getWorkbench(
   const tasks = await core.tasksBetween(start, end);
   const calendars = await core.availabilityCalendars(students, start, end);
   const vocabulary = await core.vocabularyCounts(start, end);
+  const statusLabels = await core.storage.select<DbRow>(
+    "SELECT id, label, color FROM student_status_label",
+  );
+  const statusLabelById = new Map(
+    statusLabels.map((row) => [
+      text(row, "id"),
+      {
+        id: text(row, "id"),
+        label: text(row, "label"),
+        color: nullableText(row, "color"),
+      },
+    ]),
+  );
   return {
     range: { from: start, to: end },
     students: students.map((student) => {
@@ -69,6 +82,17 @@ export async function getWorkbench(
         id: studentId,
         name: text(student, "name"),
         code: text(student, "student_code"),
+        // Optional profile columns are included for workbook export. Older
+        // databases (before migration v4) simply produce null here.
+        classType: nullableText(student, "class_type"),
+        examDate: nullableText(student, "exam_date"),
+        status: text(student, "status"),
+        statusLabel:
+          statusLabelById.get(nullableText(student, "status_label_id") ?? "") ??
+          statusLabelById.get("00000000-0000-0000-0000-000000000002") ??
+          null,
+        note: nullableText(student, "note"),
+        version: Number(student.version ?? 0),
         devicePolicy: text(student, "default_device_policy"),
         tags: parseJsonArray(student.tags_json),
         vocabularyCountThisWeek: vocabulary.get(studentId) ?? 0,
@@ -81,6 +105,7 @@ export async function getWorkbench(
                 date,
                 available: availability.available,
                 availableMinutes: availability.availableMinutes,
+                availabilitySource: availability.source,
                 tasks: tasks
                   .filter(
                     (task) =>

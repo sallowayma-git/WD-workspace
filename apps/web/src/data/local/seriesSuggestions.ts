@@ -77,9 +77,17 @@ async function automatedSeriesKeys(
         AND stt.status IN ('NOT_STARTED', 'ACTIVE', 'PAUSED')`,
     [studentId],
   );
-  return rows
-    .map((row) => nullableText(row, "normalized_key"))
-    .filter((key): key is string => key != null);
+  return rows.flatMap((row) => {
+    const key = nullableText(row, "normalized_key");
+    if (key == null) return [];
+    // Sequence definitions normalize the complete title pattern (including
+    // {n}), while the suggestion detector historically keys a group by its
+    // static prefix.  Keep both forms in the exclusion set so converting a
+    // multi-number title suppresses the suggestion just like a legacy one.
+    const withoutPlaceholder = key.replace("{n}", "");
+    const prefix = key.split("{n}", 1)[0];
+    return [key, withoutPlaceholder, prefix];
+  });
 }
 
 async function dismissedSeriesKeys(

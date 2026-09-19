@@ -42,6 +42,7 @@ class NodeSqliteStorage implements LocalStorage {
       "0001_local_core.sql",
       "0002_sequence_long_task.sql",
       "0003_sequence_invariants.sql",
+      "0004_customer_feedback_round1.sql",
     ]) {
       const migrationUrl = new URL(
         `../../../../desktop/src-tauri/migrations/${file}`,
@@ -178,6 +179,60 @@ describe("SqliteLocalDataAdapter", () => {
     await expect(studentApi.listStudents("Edited")).resolves.toMatchObject({
       items: [updated],
       total: 1,
+    });
+  });
+
+  it("persists urgency labels and clears references when deleting one", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+
+    const labels = (await adapter.listStudentStatusLabels()) as Array<{
+      id: string;
+      label: string;
+      color: string | null;
+    }>;
+    expect(labels).toHaveLength(2);
+    expect(labels[0]).toMatchObject({ label: "紧急", color: "#ff4d4f" });
+    expect(labels[1]).toMatchObject({ label: "不紧急", color: null });
+
+    const custom = (await adapter.createStudentStatusLabel({
+      label: "重点关注",
+      color: "#1677ff",
+      sortOrder: 3,
+    })) as { id: string };
+    await expect(
+      adapter.updateStudentStatusLabel(custom.id, {
+        label: "重点跟进",
+        color: "#722ed1",
+        sortOrder: 3,
+      }),
+    ).resolves.toMatchObject({ label: "重点跟进", color: "#722ed1" });
+
+    const student = (await adapter.createStudent({
+      studentCode: "S-LABEL",
+      name: "状态学生",
+      defaultDevicePolicy: "CONFIRM",
+    })) as { id: string; version: number };
+    const updated = (await adapter.updateStudentCard(student.id, {
+      statusLabelId: custom.id,
+      classType: "强化班",
+      examDate: "2026-09-30",
+      note: "需要关注",
+      expectedVersion: student.version,
+    })) as Record<string, unknown>;
+    expect(updated).toMatchObject({
+      statusLabelId: custom.id,
+      classType: "强化班",
+      examDate: "2026-09-30",
+      note: "需要关注",
+      version: student.version + 1,
+    });
+
+    await adapter.deleteStudentStatusLabel(custom.id);
+    await expect(adapter.getStudent(student.id)).resolves.toMatchObject({
+      statusLabelId: null,
+      statusLabel: null,
+      version: student.version + 2,
     });
   });
 
@@ -614,6 +669,40 @@ describe("SqliteLocalDataAdapter", () => {
       scanned: 0,
       carried: 0,
       failed: 0,
+    });
+  });
+
+  it("does not include a non-active student's pending tasks in day close", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      studentCode: "S-DAY-CLOSE-PAUSED",
+      name: "暂停日结",
+      defaultDevicePolicy: "ALLOWED",
+    })) as { id: string };
+    await adapter.saveWeeklyPattern(student.id, {
+      effectiveFrom: "2026-08-17",
+      days: Array.from({ length: 7 }, (_, index) => ({
+        dayOfWeek: index + 1,
+        available: true,
+        availableMinutes: 60,
+        devicePolicyOverride: null,
+      })),
+    });
+    await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-08-19",
+      title: "不应日结",
+      idempotencyKey: crypto.randomUUID(),
+    });
+    await storage.execute(
+      "UPDATE student SET status = 'PAUSED' WHERE id = $1",
+      [student.id],
+    );
+
+    await expect(adapter.triggerDayClose("2026-08-19")).resolves.toMatchObject({
+      scanned: 0,
+      carried: 0,
     });
   });
 
@@ -1579,6 +1668,231 @@ describe("SqliteLocalDataAdapter", () => {
     expect(byDate.get("2026-08-23")).toBe(false);
   });
 
+  it("moves unlocked tasks off a newly-resting day and leaves locked tasks in place", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      studentCode: "S-REST-MOVE",
+      name: "休息日移动",
+      defaultDevicePolicy: "ALLOWED",
+    })) as { id: string };
+    await adapter.saveWeeklyPattern(student.id, {
+      effectiveFrom: "2026-08-17",
+      days: Array.from({ length: 7 }, (_, index) => ({
+        dayOfWeek: index + 1,
+        available: true,
+        availableMinutes: 90,
+        devicePolicyOverride: null,
+      })),
+    });
+    const seeded = (await adapter.saveWeekPlan(student.id, "2026-08-17", {
+      sourceType: "BASE_PATTERN",
+    })) as { days: Array<Record<string, unknown>> };
+    const movable = (await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-08-19",
+      title: "可移动任务",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    const locked = (await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-08-19",
+      title: "锁定任务",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    await storage.execute("UPDATE task_instance SET locked = 1 WHERE id = $1", [
+      locked.id,
+    ]);
+
+    await adapter.saveWeekPlan(student.id, "2026-08-17", {
+      sourceType: "MANUAL",
+      days: seeded.days.map((day) =>
+        day.businessDate === "2026-08-19"
+          ? { ...day, available: false, availableMinutes: 0 }
+          : day,
+      ),
+    });
+
+    const rows = await storage.select<{
+      id: string;
+      scheduled_date: string;
+      status: string;
+      override_reason: string | null;
+    }>(
+      "SELECT id, scheduled_date, status, override_reason FROM task_instance WHERE id IN ($1, $2) ORDER BY id",
+      [movable.id, locked.id],
+    );
+    expect(rows.find((row) => row.id === movable.id)).toMatchObject({
+      scheduled_date: "2026-08-20",
+      status: "PENDING",
+      override_reason: "REST_DAY_MOVE",
+    });
+    expect(rows.find((row) => row.id === locked.id)).toMatchObject({
+      scheduled_date: "2026-08-19",
+      status: "PENDING",
+    });
+  });
+
+  it("marks and cancels one rest day atomically, moving pending and blocked tasks", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      studentCode: "S-REST-DAY",
+      name: "单日休息",
+      defaultDevicePolicy: "ALLOWED",
+    })) as { id: string };
+    await adapter.saveWeeklyPattern(student.id, {
+      effectiveFrom: "2026-08-17",
+      days: Array.from({ length: 7 }, (_, index) => ({
+        dayOfWeek: index + 1,
+        available: index === 3,
+        availableMinutes: index === 3 ? 90 : 0,
+        devicePolicyOverride: null,
+      })),
+    });
+    const pending = (await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-08-19",
+      title: "待移动",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    const blocked = (await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-08-19",
+      title: "阻塞也移动",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    const locked = (await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-08-19",
+      title: "锁定不移动",
+      locked: true,
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    await storage.execute(
+      "UPDATE task_instance SET status = 'BLOCKED' WHERE id = $1",
+      [blocked.id],
+    );
+
+    await expect(
+      adapter.setStudentRestDay(student.id, "2026-08-19", true),
+    ).resolves.toEqual({
+      moved: 2,
+      targetDates: ["2026-08-20"],
+      lockedSkipped: 1,
+      blocked: 0,
+    });
+    const tasks = await storage.select<{
+      id: string;
+      scheduled_date: string;
+      status: string;
+    }>(
+      "SELECT id, scheduled_date, status FROM task_instance WHERE id IN ($1, $2, $3)",
+      [pending.id, blocked.id, locked.id],
+    );
+    expect(tasks.find((task) => task.id === pending.id)).toMatchObject({
+      scheduled_date: "2026-08-20",
+      status: "PENDING",
+    });
+    expect(tasks.find((task) => task.id === blocked.id)).toMatchObject({
+      scheduled_date: "2026-08-20",
+      status: "PENDING",
+    });
+    expect(tasks.find((task) => task.id === locked.id)).toMatchObject({
+      scheduled_date: "2026-08-19",
+      status: "PENDING",
+    });
+
+    await expect(
+      adapter.setStudentRestDay(student.id, "2026-08-19", false),
+    ).resolves.toMatchObject({ moved: 0, lockedSkipped: 0, blocked: 0 });
+    const availability = (await adapter.getSchedule(student.id, {
+      from: "2026-08-19",
+      to: "2026-08-19",
+      view: "day",
+    })) as { days: Array<{ available: boolean }> };
+    expect(availability.days[0].available).toBe(true);
+  });
+
+  it("keeps a rest-day task in place when no study day exists for 90 days", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      studentCode: "S-REST-NO-TARGET",
+      name: "无落点休息",
+      defaultDevicePolicy: "ALLOWED",
+    })) as { id: string };
+    await adapter.saveWeeklyPattern(student.id, {
+      effectiveFrom: "2026-08-17",
+      days: Array.from({ length: 7 }, (_, index) => ({
+        dayOfWeek: index + 1,
+        available: false,
+        availableMinutes: 0,
+        devicePolicyOverride: null,
+      })),
+    });
+    const task = (await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-08-19",
+      title: "原位保留",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    await expect(
+      adapter.setStudentRestDay(student.id, "2026-08-19", true),
+    ).resolves.toMatchObject({ moved: 0, blocked: 1 });
+    const [row] = await storage.select<{
+      scheduled_date: string;
+      status: string;
+    }>("SELECT scheduled_date, status FROM task_instance WHERE id = $1", [
+      task.id,
+    ]);
+    expect(row).toEqual({ scheduled_date: "2026-08-19", status: "PENDING" });
+  });
+
+  it("blocks an unlocked rest-day task when no study day exists within 90 days", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      studentCode: "S-REST-BLOCK",
+      name: "无学习日",
+      defaultDevicePolicy: "ALLOWED",
+    })) as { id: string };
+    await adapter.saveWeeklyPattern(student.id, {
+      effectiveFrom: "2026-08-17",
+      days: Array.from({ length: 7 }, (_, index) => ({
+        dayOfWeek: index + 1,
+        available: false,
+        availableMinutes: 0,
+        devicePolicyOverride: null,
+      })),
+    });
+    const task = (await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-08-19",
+      title: "排不下的任务",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+
+    await adapter.saveWeekPlan(student.id, "2026-08-17", {
+      sourceType: "BASE_PATTERN",
+    });
+
+    await expect(
+      adapter.getSchedule(student.id, { from: "2026-08-19", view: "day" }),
+    ).resolves.toMatchObject({
+      days: [
+        expect.objectContaining({
+          tasks: [
+            expect.objectContaining({
+              id: task.id,
+              status: "BLOCKED",
+            }),
+          ],
+        }),
+      ],
+    });
+  });
+
   it("scopes each schedule view to the window that view actually shows", async () => {
     storage = new NodeSqliteStorage();
     const adapter = new SqliteLocalDataAdapter(storage);
@@ -2033,6 +2347,18 @@ describe("SqliteLocalDataAdapter", () => {
       durationMinutesSnapshot: 15,
     });
 
+    const multiNumber = (await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-09-01",
+      title: "2025真题1+生词",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string };
+    const multiNumberNext = (await adapter.createNextSeriesTask(
+      multiNumber.id,
+      { numberIndex: 1 },
+    )) as { titleSnapshot: string };
+    expect(multiNumberNext.titleSnapshot).toBe("2025真题2+生词");
+
     // 系列序号接在全局队尾：当天补上 day2/day3 后再点 day1 的箭头，
     // 得到的是 day4 而不是已存在的 day2 —— 三个任务逐行点下去就是
     // day4~day6，正好回答“向下复制变成接下来的序号”。
@@ -2203,6 +2529,183 @@ describe("SqliteLocalDataAdapter", () => {
       [trackId],
     );
   }
+
+  async function archiveStudent(
+    adapter: SqliteLocalDataAdapter,
+    studentId: string,
+  ) {
+    const student = (await adapter.getStudent(studentId)) as {
+      version: number;
+    };
+    return adapter.archiveStudent(studentId, {
+      expectedVersion: student.version,
+    });
+  }
+
+  async function restoreStudent(
+    adapter: SqliteLocalDataAdapter,
+    studentId: string,
+  ) {
+    const student = (await adapter.getStudent(studentId)) as {
+      version: number;
+    };
+    return adapter.restoreStudent(studentId, {
+      expectedVersion: student.version,
+      businessDate: "2026-08-18",
+    });
+  }
+
+  it("archives only private sequence definitions and restores them", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const privateStudent = await setupSequenceStudent(adapter, "S-ARCHIVE-1");
+    const sharedStudent = await setupSequenceStudent(adapter, "S-ARCHIVE-2");
+    const privateDefinition = (await adapter.createLongTask({
+      sampleTitle: "独占系列1",
+    })) as { id: string };
+    const sharedDefinition = (await adapter.createLongTask({
+      sampleTitle: "共享系列1",
+    })) as { id: string };
+    await adapter.mountLongTask({
+      studentId: privateStudent.id,
+      longTaskId: privateDefinition.id,
+      anchorDate: "2026-08-17",
+      idempotencyKey: crypto.randomUUID(),
+    });
+    await adapter.mountLongTask({
+      studentId: privateStudent.id,
+      longTaskId: sharedDefinition.id,
+      anchorDate: "2026-08-17",
+      idempotencyKey: crypto.randomUUID(),
+    });
+    await adapter.mountLongTask({
+      studentId: sharedStudent.id,
+      longTaskId: sharedDefinition.id,
+      anchorDate: "2026-08-17",
+      idempotencyKey: crypto.randomUUID(),
+    });
+
+    const originallyPaused = (await adapter.mountLongTask({
+      studentId: privateStudent.id,
+      longTaskId: (
+        (await adapter.createLongTask({ sampleTitle: "原暂停系列1" })) as {
+          id: string;
+        }
+      ).id,
+      anchorDate: "2026-08-17",
+      idempotencyKey: crypto.randomUUID(),
+    })) as { id: string; version: number };
+    await storage.execute(
+      "UPDATE student_task_track SET status = 'PAUSED' WHERE id = $1",
+      [originallyPaused.id],
+    );
+
+    const impact = (await adapter.getArchiveImpact(privateStudent.id)) as {
+      pendingTaskCount: number;
+      tracks: unknown[];
+      definitions: Array<{ id: string }>;
+    };
+    expect(impact.pendingTaskCount).toBeGreaterThan(0);
+    expect(impact.definitions.map((item) => item.id)).toContain(
+      privateDefinition.id,
+    );
+    await archiveStudent(adapter, privateStudent.id);
+    const afterArchive = await storage.select<{
+      id: string;
+      status: string;
+    }>(
+      "SELECT id, status FROM task_template WHERE id IN ($1, $2) ORDER BY id",
+      [privateDefinition.id, sharedDefinition.id],
+    );
+    expect(afterArchive).toEqual(
+      [
+        { id: privateDefinition.id, status: "ARCHIVED" },
+        { id: sharedDefinition.id, status: "ACTIVE" },
+      ].sort((a, b) => a.id.localeCompare(b.id)),
+    );
+
+    const archivedTracks = await storage.select<{ id: string; status: string }>(
+      "SELECT id, status FROM student_task_track WHERE student_id = $1",
+      [privateStudent.id],
+    );
+    expect(
+      archivedTracks.find((track) => track.id === originallyPaused.id)?.status,
+    ).toBe("PAUSED");
+    expect(
+      archivedTracks
+        .filter((track) => track.id !== originallyPaused.id)
+        .every((track) => track.status === "PAUSED"),
+    ).toBe(true);
+    const openTasks = await storage.select<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM task_instance WHERE student_id = $1 AND status IN ('PENDING', 'BLOCKED')",
+      [privateStudent.id],
+    );
+    expect(openTasks[0].count).toBe(0);
+
+    const restoreResult = (await restoreStudent(
+      adapter,
+      privateStudent.id,
+    )) as {
+      warnings: string[];
+      materializedTasks: number;
+    };
+    expect(restoreResult.warnings).toEqual([]);
+    expect(restoreResult.materializedTasks).toBeGreaterThan(0);
+    const afterRestore = await storage.select<{
+      id: string;
+      status: string;
+    }>("SELECT id, status FROM task_template WHERE id = $1", [
+      privateDefinition.id,
+    ]);
+    expect(afterRestore[0].status).toBe("ACTIVE");
+  });
+
+  it("leaves a private definition archived when restore meets an active normalized-key conflict", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = await setupSequenceStudent(adapter, "S-ARCHIVE-CONFLICT");
+    const archivedDefinition = (await adapter.createLongTask({
+      sampleTitle: "冲突系列1",
+    })) as { id: string };
+    await adapter.mountLongTask({
+      studentId: student.id,
+      longTaskId: archivedDefinition.id,
+      anchorDate: "2026-08-17",
+      idempotencyKey: crypto.randomUUID(),
+    });
+    await archiveStudent(adapter, student.id);
+
+    // The archived definition is no longer part of the active unique index,
+    // so a new definition with the same normalized key is valid.
+    const replacement = (await adapter.createLongTask({
+      sampleTitle: "冲突系列5",
+    })) as { id: string };
+    expect(replacement.id).not.toBe(archivedDefinition.id);
+
+    await expect(restoreStudent(adapter, student.id)).resolves.toMatchObject({
+      student: { status: "ACTIVE" },
+      warnings: [expect.stringContaining("同名活动定义")],
+    });
+    const rows = await storage.select<{
+      id: string;
+      status: string;
+      normalized_key: string;
+    }>(
+      "SELECT id, status, normalized_key FROM task_template WHERE id IN ($1, $2)",
+      [archivedDefinition.id, replacement.id],
+    );
+    expect(rows.find((row) => row.id === archivedDefinition.id)?.status).toBe(
+      "ARCHIVED",
+    );
+    expect(rows.find((row) => row.id === replacement.id)?.status).toBe(
+      "ACTIVE",
+    );
+    expect(
+      rows
+        .filter((row) => row.status === "ACTIVE")
+        .map((row) => row.normalized_key),
+    ).toEqual(["冲突系列{n}"]);
+  });
 
   it("replays commits made after the first idempotency read and before validation", async () => {
     const racingStorage = new InterleavedSqliteStorage();
@@ -3011,5 +3514,54 @@ describe("SqliteLocalDataAdapter", () => {
     })) as { id: string; name: string };
     expect(recreated.name).toBe("真题精讲");
     expect(recreated.id).not.toBe(mountedTask.id);
+  });
+
+  it("previews schedule import with additive deduplication and unmatched students", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      studentCode: "S-IMPORT",
+      name: "排期学生",
+      defaultDevicePolicy: "CONFIRM",
+    })) as { id: string };
+    await adapter.createAdHocTask({
+      studentId: student.id,
+      scheduledDate: "2026-09-21",
+      title: "已存在",
+      idempotencyKey: crypto.randomUUID(),
+    });
+    const plan = (await adapter.previewScheduleImport([
+      {
+        studentCode: "S-IMPORT",
+        studentName: "排期学生",
+        date: "2026-09-21",
+        titles: ["已存在", "新增"],
+      },
+      {
+        studentCode: "S-NOT-FOUND",
+        studentName: "不存在",
+        date: "2026-09-21",
+        titles: ["不应阻塞"],
+      },
+    ])) as {
+      toCreate: Array<{ titles: string[] }>;
+      skippedDuplicates: number;
+      unmatchedStudents: unknown[];
+    };
+    expect(plan.toCreate).toHaveLength(1);
+    expect(plan.toCreate[0].titles).toEqual(["新增"]);
+    expect(plan.skippedDuplicates).toBe(1);
+    expect(plan.unmatchedStudents).toHaveLength(1);
+    await expect(adapter.executeScheduleImport(plan)).resolves.toEqual({
+      created: 1,
+    });
+    await expect(
+      storage.select<{ source_type: string; schedule_origin: string }>(
+        "SELECT source_type, schedule_origin FROM task_instance WHERE title_snapshot = $1",
+        ["新增"],
+      ),
+    ).resolves.toEqual([
+      { source_type: "IMPORT", schedule_origin: "EXCEL_IMPORT" },
+    ]);
   });
 });
