@@ -247,6 +247,28 @@ describe("StudentWorkbenchPage matrix acceptance", () => {
     expect(await within(matrix).findByText("休息")).toBeInTheDocument();
   });
 
+  it("keeps locked or otherwise stranded tasks visible on a rest day", async () => {
+    const payload = workbenchPayload();
+    const date = weekDates()[0];
+    payload.students[0].days[date] = {
+      date,
+      available: false,
+      availableMinutes: 0,
+      tasks: cell(date, ["锁定留存"]).tasks,
+    };
+    setDataAdapterForTests({
+      getWorkbench: () => Promise.resolve(payload),
+    } as unknown as DataAdapter);
+
+    renderPage();
+
+    const matrix = await screen.findByTestId("student-task-matrix");
+    expect(await within(matrix).findByText("锁定留存")).toBeVisible();
+    expect(
+      within(matrix).queryByLabelText(`为 林同学 在 ${date} 添加任务`),
+    ).not.toBeInTheDocument();
+  });
+
   it("keeps an active composer when another cell's composer finishes later", async () => {
     let resolveCreate: (() => void) | undefined;
     vi.mocked(createAdHocTask).mockImplementation(

@@ -72,6 +72,7 @@ export async function createAdHocTask(
                     SELECT 1 FROM student_date_override rest
                     WHERE rest.student_id = s.id
                       AND rest.business_date = $3 AND rest.available = 0
+                      AND rest.source_type = 'MANUAL' AND rest.note = '休息'
                   )`,
             values: [
               id,

@@ -7,7 +7,9 @@ const studentTagSchema = z.object({
 });
 
 export const studentStatusLabelSchema = z.object({
-  id: z.string().uuid(),
+  // Seed labels in the released v4 migration use stable opaque identifiers;
+  // they are not required to satisfy RFC-4122 UUID version/variant bits.
+  id: z.string().min(1),
   label: z.string().min(1),
   color: z.string().nullable(),
   sortOrder: z.number(),
@@ -39,7 +41,7 @@ const studentSchema = z.object({
   name: z.string(),
   alias: z.string().nullable(),
   status: z.enum(["ACTIVE", "PAUSED", "ARCHIVED"]),
-  statusLabelId: z.string().uuid().nullable().optional(),
+  statusLabelId: z.string().min(1).nullable().optional(),
   statusLabel: studentStatusLabelSchema
     .omit({ sortOrder: true })
     .nullable()

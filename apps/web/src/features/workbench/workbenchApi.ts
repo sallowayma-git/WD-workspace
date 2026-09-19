@@ -66,7 +66,10 @@ const studentRowSchema = z.object({
   status: z.string().nullable().optional(),
   statusLabel: z
     .object({
-      id: z.string().uuid(),
+      // v4 was shipped with stable seed identifiers that are opaque database
+      // keys but not RFC-4122 version/variant UUIDs. Keep this boundary
+      // compatible with already-migrated local databases.
+      id: z.string().min(1),
       label: z.string(),
       color: z.string().nullable(),
     })

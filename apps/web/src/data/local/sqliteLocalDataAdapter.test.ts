@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
 import { ApiError } from "../../lib/api/ApiError";
 import * as studentApi from "../../features/students/studentApi";
+import { getWorkbench as getWorkbenchApi } from "../../features/workbench/workbenchApi";
 import { setDataAdapterForTests } from "../runtime";
 import type {
   LocalQueryResult,
@@ -131,6 +132,28 @@ describe("SqliteLocalDataAdapter", () => {
     setDataAdapterForTests(null);
     storage?.database.close();
     storage = undefined;
+  });
+
+  it("parses a real workbench projection with the released opaque seed label id", async () => {
+    storage = new NodeSqliteStorage();
+    setDataAdapterForTests(new SqliteLocalDataAdapter(storage));
+    await studentApi.createStudent({
+      name: "真实工作台链路",
+      defaultDevicePolicy: "ALLOWED",
+    });
+
+    await expect(
+      getWorkbenchApi("2026-09-21", "2026-09-21"),
+    ).resolves.toMatchObject({
+      students: [
+        {
+          statusLabel: {
+            id: "00000000-0000-0000-0000-000000000002",
+            label: "不紧急",
+          },
+        },
+      ],
+    });
   });
 
   it("returns student API views after creating and editing a profile", async () => {
@@ -1897,6 +1920,37 @@ describe("SqliteLocalDataAdapter", () => {
         view: "day",
       }),
     ).resolves.toMatchObject({ days: [{ available: true }] });
+  });
+
+  it("allows an ad-hoc task on a normal weekly off override", async () => {
+    storage = new NodeSqliteStorage();
+    const adapter = new SqliteLocalDataAdapter(storage);
+    const student = (await adapter.createStudent({
+      studentCode: "S-WEEKLY-OFF-ADHOC",
+      name: "周休临时任务",
+      defaultDevicePolicy: "ALLOWED",
+    })) as { id: string };
+    await adapter.saveWeeklyPattern(student.id, {
+      effectiveFrom: "2026-08-17",
+      days: Array.from({ length: 7 }, (_, index) => ({
+        dayOfWeek: index + 1,
+        available: index < 5,
+        availableMinutes: index < 5 ? 90 : 0,
+        devicePolicyOverride: null,
+      })),
+    });
+    await adapter.saveWeekPlan(student.id, "2026-08-17", {
+      sourceType: "BASE_PATTERN",
+    });
+
+    await expect(
+      adapter.createAdHocTask({
+        studentId: student.id,
+        scheduledDate: "2026-08-22",
+        title: "周休临时任务",
+        idempotencyKey: crypto.randomUUID(),
+      }),
+    ).resolves.toMatchObject({ titleSnapshot: "周休临时任务" });
   });
 
   it("keeps a rest-day task in place when no study day exists for 90 days", async () => {

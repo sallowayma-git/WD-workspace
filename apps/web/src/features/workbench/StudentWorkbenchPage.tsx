@@ -1237,12 +1237,8 @@ export function StudentWorkbenchPage() {
               />
             </div>
           );
-        } else if (!available) {
-          // A rest day remains visible for history and context-menu actions,
-          // but must never offer an add-task entry.
-          content = <span aria-hidden="true" />;
         } else if (!cell || cell.tasks.length === 0) {
-          content = (
+          content = available ? (
             <Button
               type="text"
               size="small"
@@ -1250,6 +1246,8 @@ export function StudentWorkbenchPage() {
               aria-label={`为 ${row.name} 在 ${date} 添加任务`}
               onClick={() => setActiveComposer({ studentId: row.id, date })}
             />
+          ) : (
+            <span aria-hidden="true" />
           );
         } else {
           content = (
